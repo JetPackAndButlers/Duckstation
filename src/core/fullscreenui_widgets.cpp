@@ -534,7 +534,7 @@ std::optional<Image> FullscreenUI::LoadTextureImage(std::string_view path, u32 s
     if (svg_data.has_value())
     {
       image = Image();
-      if (!image->RasterizeSVG(svg_data->cspan(), svg_width, svg_height))
+      if (!image->RasterizeSVG(svg_data->cspan(), svg_width, svg_height, &error))
       {
         ERROR_LOG("Failed to rasterize SVG texture file '{}': {}", path, error.GetDescription());
         image.reset();
@@ -1085,6 +1085,8 @@ void FullscreenUI::EndLayout()
 
   s_state.left_fullscreen_footer_text.clear();
   s_state.fullscreen_footer_text.clear();
+
+  s_state.split_window_focus_change = SplitWindowFocusChange::None;
 
   s_state.rendered_menu_item_border = false;
   s_state.had_hovered_menu_item = std::exchange(s_state.has_hovered_menu_item, false);
@@ -3410,8 +3412,6 @@ void FullscreenUI::BeginInnerSplitWindow()
   ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 0.0f);
   ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0.0f);
 
-  s_state.split_window_focus_change = SplitWindowFocusChange::None;
-
   if (!ImGui::IsPopupOpen(0u, ImGuiPopupFlags_AnyPopup))
   {
     if (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft, true) || ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true))
@@ -3453,6 +3453,7 @@ bool FullscreenUI::BeginSplitWindowSidebar(float sidebar_width /*= 0.2f*/)
     // cancel any pending focus change
     if (s_state.split_window_focus_change == SplitWindowFocusChange::FocusSidebar)
     {
+      // don't eat the right keypress
       s_state.split_window_focus_change = SplitWindowFocusChange::None;
       CancelResetFocus();
     }
@@ -3542,7 +3543,7 @@ bool FullscreenUI::BeginSplitWindowContent(bool background)
   ImGui::PushStyleColor(ImGuiCol_ChildBg,
                         ModAlpha(DarkerColor(ImGui::GetStyle().Colors[ImGuiCol_WindowBg], 1.5f), 0.25f));
 
-  if (IsFocusResetFromWindowChange())
+  if (IsFocusResetFromWindowChange() || s_state.split_window_focus_change == SplitWindowFocusChange::FocusContent)
     ImGui::SetNextWindowScroll(ImVec2(0.0f, 0.0f));
 
   ImGuiWindow* const window = ImGui::GetCurrentWindow();
@@ -3557,9 +3558,15 @@ bool FullscreenUI::BeginSplitWindowContent(bool background)
     // cancel any pending focus change
     if (s_state.split_window_focus_change == SplitWindowFocusChange::FocusContent)
     {
+      // don't eat the right keypress
       s_state.split_window_focus_change = SplitWindowFocusChange::None;
       CancelResetFocus();
     }
+  }
+  else
+  {
+    if (s_state.split_window_focus_change == SplitWindowFocusChange::FocusContent)
+      ResetFocusHere();
   }
 
   return ret;
