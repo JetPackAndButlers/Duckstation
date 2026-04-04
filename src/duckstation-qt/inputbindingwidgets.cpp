@@ -126,12 +126,25 @@ void InputBindingWidget::updateTextAndToolTip()
     setText(tr("%n bindings", nullptr, static_cast<int>(m_bindings.size())));
 
     // keep the full thing for the tooltip
-    const QString qss = QString::fromStdString(StringUtil::JoinString(m_bindings.begin(), m_bindings.end(), "\n"));
-    setToolTip(QStringLiteral("%1\n\n%2\n%3").arg(qss).arg(tr(help_text)).arg(help_clear_text));
+    QString tooltip = tr(help_text);
+    tooltip.append("\n\n"_L1);
+    for (const std::string& binding : m_bindings)
+    {
+      if (SmallString pretty_binding(binding); InputManager::PrettifyInputBinding(pretty_binding, false))
+        tooltip += QtUtils::StringViewToQString(pretty_binding);
+      else
+        tooltip += QString::fromStdString(binding);
+      tooltip += '\n';
+    }
+    tooltip.append(tr(help_clear_text));
+    setToolTip(tooltip);
   }
   else
   {
-    m_full_text = QString::fromStdString(m_bindings[0]);
+    if (SmallString pretty_binding(m_bindings[0]); InputManager::PrettifyInputBinding(pretty_binding, false))
+      m_full_text = QtUtils::StringViewToQString(pretty_binding);
+    else
+      m_full_text = QString::fromStdString(m_bindings[0]);
     updateElidedText();
     setToolTip(QStringLiteral("%1\n\n%2\n%3").arg(m_full_text).arg(tr(help_text)).arg(tr(help_clear_text)));
   }
@@ -525,26 +538,22 @@ void InputBindingWidget::showEffectBindingDialog()
       item->setCheckState(item->isSelected() ? Qt::Checked : Qt::Unchecked);
   });
 
-  for (const auto& [type, key] : g_core_thread->getInputDeviceListModel()->getEffectList())
+  for (const InputDeviceListModel::Effect& effect : g_core_thread->getInputDeviceListModel()->getEffectList())
   {
-    if (type != m_bind_type)
-      continue;
-
-    const TinyString name = InputManager::ConvertInputBindingKeyToString(type, key);
-    if (name.empty())
+    if (effect.type != m_bind_type)
       continue;
 
     const bool is_bound =
-      std::ranges::any_of(m_bindings, [&name](const std::string& other_name) { return (other_name == name.view()); });
+      std::ranges::any_of(m_bindings, [&effect](const std::string& other_name) { return (other_name == effect.name); });
 
     QListWidgetItem* const item = new QListWidgetItem();
     item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
     item->setCheckState(is_bound ? Qt::Checked : Qt::Unchecked);
     item->setText(QStringLiteral("%1\n%2")
-                    .arg(QtUtils::StringViewToQString(name))
-                    .arg(g_core_thread->getInputDeviceListModel()->getDeviceName(key)));
-    item->setData(Qt::UserRole, QtUtils::StringViewToQString(name));
-    item->setIcon(InputDeviceListModel::getIconForKey(key));
+                    .arg(QtUtils::StringViewToQString(effect.display_name))
+                    .arg(g_core_thread->getInputDeviceListModel()->getDeviceName(effect.key)));
+    item->setData(Qt::UserRole, QtUtils::StringViewToQString(effect.name));
+    item->setIcon(InputDeviceListModel::getIconForKey(effect.key));
     list->addItem(item);
 
     item->setSelected(is_bound);

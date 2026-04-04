@@ -19,6 +19,7 @@
 #include "video_presenter.h"
 #include "video_thread.h"
 
+#include "util/gpu_device.h"
 #include "util/imgui_manager.h"
 #include "util/ini_settings_interface.h"
 #include "util/input_manager.h"
@@ -113,7 +114,7 @@ static u32 GetEffectiveUIntSetting(SettingsInterface* bsi, const char* section, 
 static float GetEffectiveFloatSetting(SettingsInterface* bsi, const char* section, const char* key,
                                       float default_value);
 static TinyString GetEffectiveTinyStringSetting(SettingsInterface* bsi, const char* section, const char* key,
-                                                const char* default_value = "");
+                                                std::string_view default_value = {});
 static void BeginResetSettings();
 static void DoCopyGameSettings();
 static void DoClearGameSettings();
@@ -164,7 +165,7 @@ static void DrawStringListSetting(SettingsInterface* bsi, std::string_view title
 template<typename DataType, typename SizeType>
 static void DrawEnumSetting(SettingsInterface* bsi, std::string_view title, std::string_view summary,
                             const char* section, const char* key, DataType default_value,
-                            std::optional<DataType> (*from_string_function)(const char* str),
+                            std::optional<DataType> (*from_string_function)(std::string_view str),
                             const char* (*to_string_function)(DataType value),
                             const char* (*to_display_string_function)(DataType value), SizeType option_count,
                             bool enabled = true);
@@ -193,7 +194,6 @@ static constexpr std::string_view COVER_DOWNLOADER_DIALOG_NAME = "##cover_downlo
 namespace {
 struct SettingsLocals
 {
-  float settings_last_bg_alpha = 1.0f;
   SettingsPage settings_page = SettingsPage::Interface;
   std::unique_ptr<INISettingsInterface> game_settings_interface;
   std::unique_ptr<GameList::Entry> game_settings_entry;
@@ -303,7 +303,7 @@ float FullscreenUI::GetEffectiveFloatSetting(SettingsInterface* bsi, const char*
 }
 
 TinyString FullscreenUI::GetEffectiveTinyStringSetting(SettingsInterface* bsi, const char* section, const char* key,
-                                                       const char* default_value)
+                                                       std::string_view default_value)
 {
   TinyString ret;
   std::optional<TinyString> value;
@@ -330,7 +330,7 @@ void FullscreenUI::DrawInputBindingButton(SettingsInterface* bsi, InputBindingIn
   SmallString value = bsi->GetSmallStringValue(section, name);
   const bool oneline = value.count('&') <= 1;
   if (oneline && type != InputBindingInfo::Type::Pointer && type != InputBindingInfo::Type::Device)
-    InputManager::PrettifyInputBinding(value, &GetControllerIconMapping);
+    InputManager::PrettifyInputBinding(value, true, &GetControllerIconMapping);
 
   if (show_type)
   {
@@ -566,49 +566,73 @@ void FullscreenUI::BeginEffectBinding(SettingsInterface* bsi, InputBindingInfo::
 {
   // vibration motors use a list to select
   const bool game_settings = IsEditingGameSettings(bsi);
-  InputManager::DeviceEffectList effects = InputManager::EnumerateDeviceEffects(type);
-  if (effects.empty())
-  {
-    ShowToast(OSDMessageType::Info, {}, FSUI_STR("No devices with vibration motors were detected."));
-    return;
-  }
+  Host::RunOnCoreThread([type, section = std::string(section), key = std::string(key),
+                         display_name = std::string(display_name), game_settings]() mutable {
+    const InputManager::DeviceEffectList effects = InputManager::EnumerateDeviceEffects(type);
+    std::vector<std::pair<std::string, std::string>> effect_names;
+    for (const auto& [eff_type, eff_key] : effects)
+    {
+      SmallString binding = InputManager::ConvertInputBindingKeyToString(eff_type, eff_key);
+      std::string name(binding);
+      InputManager::PrettifyInputBinding(binding, false);
+      effect_names.emplace_back(std::move(name), std::string(binding));
+    }
 
-  const TinyString current_binding = bsi->GetTinyStringValue(section, key);
-  size_t current_index = effects.size();
-  ChoiceDialogOptions options;
-  options.reserve(effects.size() + 1);
-  for (size_t i = 0; i < effects.size(); i++)
-  {
-    const TinyString text = InputManager::ConvertInputBindingKeyToString(effects[i].first, effects[i].second);
-    const bool this_index = (current_binding.view() == text);
-    current_index = this_index ? i : current_index;
-    options.emplace_back(text, this_index);
-  }
+    VideoThread::RunOnThread([type, section = std::move(section), key = std::move(key),
+                              display_name = std::move(display_name), effect_names = std::move(effect_names),
+                              game_settings]() mutable {
+      if (effect_names.empty())
+      {
+        ShowToast(OSDMessageType::Info, {},
+                  (type == InputBindingInfo::Type::Motor) ?
+                    FSUI_STR("No devices with vibration motors were detected.") :
+                    FSUI_STR("No devices with LEDs were detected."));
+        return;
+      }
 
-  // empty/no mapping value
-  if (type == InputBindingInfo::Type::Motor)
-    options.emplace_back(FSUI_STR("No Vibration"), current_binding.empty());
-  else if (type == InputBindingInfo::Type::LED)
-    options.emplace_back(FSUI_STR("No LED"), current_binding.empty());
+      SettingsInterface* bsi = GetEditingSettingsInterface(game_settings);
+      const TinyString current_binding = bsi->GetTinyStringValue(section.c_str(), key.c_str());
+      size_t current_index = effect_names.size();
+      ChoiceDialogOptions options;
+      options.reserve(effect_names.size() + 1);
+      for (size_t i = 0; i < effect_names.size(); i++)
+      {
+        const bool this_index = (current_binding.view() == effect_names[i].first);
+        current_index = this_index ? i : current_index;
+        options.emplace_back(std::move(effect_names[i].second), this_index);
+      }
 
-  // add current value to list if it's not currently available
-  if (!current_binding.empty() && current_index == effects.size())
-    options.emplace_back(std::make_pair(std::string(current_binding.view()), true));
+      // empty/no mapping value
+      if (type == InputBindingInfo::Type::Motor)
+        options.emplace_back(FSUI_STR("No Vibration"), current_binding.empty());
+      else if (type == InputBindingInfo::Type::LED)
+        options.emplace_back(FSUI_STR("No LED"), current_binding.empty());
 
-  OpenChoiceDialog(display_name, false, std::move(options),
-                   [game_settings, section = std::string(section), key = std::string(key),
-                    effects = std::move(effects)](s32 index, const std::string& title, bool checked) {
-                     if (index < 0)
-                       return;
+      // add current value to list if it's not currently available
+      if (!current_binding.empty() && current_index == effect_names.size())
+        options.emplace_back(std::make_pair(std::string(current_binding.view()), true));
 
-                     const auto lock = Core::GetSettingsLock();
-                     SettingsInterface* bsi = GetEditingSettingsInterface(game_settings);
-                     if (static_cast<size_t>(index) == effects.size())
-                       bsi->DeleteValue(section.c_str(), key.c_str());
-                     else
-                       bsi->SetStringValue(section.c_str(), key.c_str(), title.c_str());
-                     SetSettingsChanged(bsi);
-                   });
+      OpenChoiceDialog(display_name, false, std::move(options),
+                       [game_settings, section = std::string(section), key = std::string(key),
+                        effect_names = std::move(effect_names)](s32 index, const std::string& title, bool checked) {
+                         if (index < 0)
+                           return;
+
+                         const auto lock = Core::GetSettingsLock();
+                         SettingsInterface* bsi = GetEditingSettingsInterface(game_settings);
+                         if (static_cast<size_t>(index) == effect_names.size())
+                         {
+                           bsi->DeleteValue(section.c_str(), key.c_str());
+                         }
+                         else
+                         {
+                           bsi->SetStringValue(section.c_str(), key.c_str(),
+                                               effect_names[static_cast<size_t>(index)].first.c_str());
+                         }
+                         SetSettingsChanged(bsi);
+                       });
+    });
+  });
 }
 
 bool FullscreenUI::DrawToggleSetting(SettingsInterface* bsi, std::string_view title, std::string_view summary,
@@ -626,7 +650,7 @@ bool FullscreenUI::DrawToggleSetting(SettingsInterface* bsi, std::string_view ti
   else
   {
     std::optional<bool> value(false);
-    if (!bsi->GetBoolValue(section, key, &value.value()))
+    if (!bsi->FindBoolValue(section, key, &value.value()))
       value.reset();
     if (!ThreeWayToggleButton(title, summary, &value, enabled))
       return false;
@@ -1381,16 +1405,18 @@ void FullscreenUI::DrawStringListSetting(SettingsInterface* bsi, std::string_vie
 template<typename DataType, typename SizeType>
 void FullscreenUI::DrawEnumSetting(SettingsInterface* bsi, std::string_view title, std::string_view summary,
                                    const char* section, const char* key, DataType default_value,
-                                   std::optional<DataType> (*from_string_function)(const char* str),
+                                   std::optional<DataType> (*from_string_function)(std::string_view str),
                                    const char* (*to_string_function)(DataType value),
                                    const char* (*to_display_string_function)(DataType value), SizeType option_count,
                                    bool enabled /* = true */)
 {
   const bool game_settings = IsEditingGameSettings(bsi);
-  const std::optional<SmallString> value(bsi->GetOptionalSmallStringValue(
-    section, key, game_settings ? std::nullopt : std::optional<const char*>(to_string_function(default_value))));
 
-  const std::optional<DataType> typed_value(value.has_value() ? from_string_function(value->c_str()) : std::nullopt);
+  std::optional<DataType> typed_value;
+  if (std::string_view value; bsi->FindStringValue(section, key, &value))
+    typed_value = from_string_function(value);
+  if (!typed_value.has_value() && !game_settings)
+    typed_value = default_value;
 
   if (MenuButtonWithValue(title, summary,
                           typed_value.has_value() ? to_display_string_function(typed_value.value()) :
@@ -1400,7 +1426,7 @@ void FullscreenUI::DrawEnumSetting(SettingsInterface* bsi, std::string_view titl
     ChoiceDialogOptions cd_options;
     cd_options.reserve(static_cast<u32>(option_count) + 1);
     if (game_settings)
-      cd_options.emplace_back(FSUI_STR("Use Global Setting"), !value.has_value());
+      cd_options.emplace_back(FSUI_STR("Use Global Setting"), !typed_value.has_value());
     for (u32 i = 0; i < static_cast<u32>(option_count); i++)
       cd_options.emplace_back(to_display_string_function(static_cast<DataType>(i)),
                               (typed_value.has_value() && i == static_cast<u32>(typed_value.value())));
@@ -1527,39 +1553,43 @@ void FullscreenUI::DrawFolderSetting(SettingsInterface* bsi, std::string_view ti
 
 void FullscreenUI::StartAutomaticBindingForPort(u32 port)
 {
-  InputManager::DeviceList devices = InputManager::EnumerateDevices();
-  if (devices.empty())
-  {
-    ShowToast(OSDMessageType::Info, {}, FSUI_STR("Automatic mapping failed, no devices are available."));
-    return;
-  }
+  Host::RunOnCoreThread([port]() {
+    InputManager::DeviceList devices = InputManager::EnumerateDevices();
+    VideoThread::RunOnThread([port, devices = std::move(devices)]() mutable {
+      if (devices.empty())
+      {
+        ShowToast(OSDMessageType::Info, {}, FSUI_STR("Automatic mapping failed, no devices are available."));
+        return;
+      }
 
-  std::vector<std::string> names;
-  ChoiceDialogOptions options;
-  options.reserve(devices.size());
-  names.reserve(devices.size());
-  for (auto& [key, name, display_name] : devices)
-  {
-    names.push_back(std::move(name));
-    options.emplace_back(std::move(display_name), false);
-  }
-  OpenChoiceDialog(FSUI_STR("Select Device"), false, std::move(options),
-                   [port, names = std::move(names)](s32 index, const std::string& title, bool checked) {
-                     if (index < 0)
-                       return;
+      std::vector<std::string> names;
+      ChoiceDialogOptions options;
+      options.reserve(devices.size());
+      names.reserve(devices.size());
+      for (auto& [key, name, display_name] : devices)
+      {
+        names.push_back(std::move(name));
+        options.emplace_back(std::move(display_name), false);
+      }
+      OpenChoiceDialog(FSUI_STR("Select Device"), false, std::move(options),
+                       [port, names = std::move(names)](s32 index, const std::string& title, bool checked) {
+                         if (index < 0)
+                           return;
 
-                     const std::string& name = names[index];
-                     const auto lock = Core::GetSettingsLock();
-                     SettingsInterface* bsi = GetEditingSettingsInterface();
-                     const bool result =
-                       InputManager::MapController(*bsi, port, InputManager::GetGenericBindingMapping(name), true);
-                     SetSettingsChanged(bsi);
+                         const std::string& name = names[index];
+                         const auto lock = Core::GetSettingsLock();
+                         SettingsInterface* bsi = GetEditingSettingsInterface();
+                         const bool result =
+                           InputManager::MapController(*bsi, port, InputManager::GetGenericBindingMapping(name), true);
+                         SetSettingsChanged(bsi);
 
-                     // and the toast needs to happen on the UI thread.
-                     ShowToast(result ? OSDMessageType::Quick : OSDMessageType::Info, {},
-                               result ? fmt::format(FSUI_FSTR("Automatic mapping completed for {}."), name) :
-                                        fmt::format(FSUI_FSTR("Automatic mapping failed for {}."), name));
-                   });
+                         // and the toast needs to happen on the UI thread.
+                         ShowToast(result ? OSDMessageType::Quick : OSDMessageType::Info, {},
+                                   result ? fmt::format(FSUI_FSTR("Automatic mapping completed for {}."), name) :
+                                            fmt::format(FSUI_FSTR("Automatic mapping failed for {}."), name));
+                       });
+    });
+  });
 }
 
 void FullscreenUI::StartClearBindingsForPort(u32 port)
@@ -1653,7 +1683,6 @@ void FullscreenUI::SwitchToSettings()
 
   SwitchToMainWindow(MainWindowType::Settings);
   s_settings_locals.settings_page = SettingsPage::Interface;
-  s_settings_locals.settings_last_bg_alpha = GetBackgroundAlpha();
 }
 
 bool FullscreenUI::SwitchToGameSettings(SettingsPage page)
@@ -1817,12 +1846,8 @@ void FullscreenUI::DrawSettingsWindow()
   const ImVec2 heading_size = ImVec2(
     io.DisplaySize.x, UIStyle.LargeFontSize + (LayoutScale(LAYOUT_MENU_BUTTON_Y_PADDING) * 2.0f) + LayoutScale(2.0f));
 
-  const float target_bg_alpha = GetBackgroundAlpha();
-  s_settings_locals.settings_last_bg_alpha =
-    (target_bg_alpha < s_settings_locals.settings_last_bg_alpha) ?
-      std::max(s_settings_locals.settings_last_bg_alpha - io.DeltaTime * 2.0f, target_bg_alpha) :
-      std::min(s_settings_locals.settings_last_bg_alpha + io.DeltaTime * 2.0f, target_bg_alpha);
-
+  const float bg_alpha = GetBackgroundAlpha();
+  const bool blur_background = CanBlurBackground() && s_settings_locals.settings_page != SettingsPage::PostProcessing;
   const bool show_localized_titles = GameList::ShouldShowLocalizedTitles();
 
   static constexpr const SettingsPage global_pages[] = {
@@ -1866,8 +1891,7 @@ void FullscreenUI::DrawSettingsWindow()
   }
 
   if (BeginFullscreenWindow(ImVec2(0.0f, 0.0f), heading_size, "settings_category",
-                            ImVec4(UIStyle.PrimaryColor.x, UIStyle.PrimaryColor.y, UIStyle.PrimaryColor.z,
-                                   s_settings_locals.settings_last_bg_alpha)))
+                            ModAlpha(UIStyle.PrimaryColor, bg_alpha), 0.0f, ImVec2(), 0, blur_background))
   {
     BeginNavBar();
 
@@ -1909,9 +1933,8 @@ void FullscreenUI::DrawSettingsWindow()
       ImVec2(0.0f, heading_size.y),
       ImVec2(io.DisplaySize.x, io.DisplaySize.y - heading_size.y - LayoutScale(LAYOUT_FOOTER_HEIGHT)),
       TinyString::from_format("settings_page_{}", static_cast<u32>(s_settings_locals.settings_page)).c_str(),
-      ImVec4(UIStyle.BackgroundColor.x, UIStyle.BackgroundColor.y, UIStyle.BackgroundColor.z,
-             s_settings_locals.settings_last_bg_alpha),
-      0.0f, ImVec2(LAYOUT_MENU_WINDOW_X_PADDING, 0.0f));
+      ModAlpha(UIStyle.BackgroundColor, bg_alpha), 0.0f, ImVec2(LAYOUT_MENU_WINDOW_X_PADDING, 0.0f), 0,
+      blur_background);
 
     if (ImGui::IsWindowFocused() && WantsToCloseMenu())
       ReturnToPreviousWindow();
@@ -1923,8 +1946,7 @@ void FullscreenUI::DrawSettingsWindow()
       ImVec2(0.0f, heading_size.y),
       ImVec2(io.DisplaySize.x, io.DisplaySize.y - heading_size.y - LayoutScale(LAYOUT_FOOTER_HEIGHT)),
       TinyString::from_format("settings_page_{}", static_cast<u32>(s_settings_locals.settings_page)).c_str(),
-      ImVec4(UIStyle.BackgroundColor.x, UIStyle.BackgroundColor.y, UIStyle.BackgroundColor.z,
-             s_settings_locals.settings_last_bg_alpha));
+      ModAlpha(UIStyle.BackgroundColor, bg_alpha), 0.0f, ImVec2(), 0, true);
 
     if (SplitWindowIsNavWindow() && WantsToCloseMenu())
       ReturnToPreviousWindow();
@@ -2027,14 +2049,16 @@ void FullscreenUI::DrawSettingsWindow()
 
   if (IsGamepadInputSource())
   {
-    SetFullscreenFooterText(std::array{std::make_pair(ICON_PF_XBOX_DPAD_LEFT_RIGHT, FSUI_VSTR("Change Page")),
-                                       std::make_pair(ICON_PF_XBOX_DPAD_UP_DOWN, FSUI_VSTR("Navigate")),
-                                       std::make_pair(ICON_PF_BUTTON_A, FSUI_VSTR("Select")),
-                                       std::make_pair(ICON_PF_BUTTON_B, FSUI_VSTR("Back"))});
+    SetFullscreenFooterText(std::array{
+      std::make_pair(ICON_PF_LEFT_TRIGGER_LT ICON_PF_RIGHT_TRIGGER_RT, FSUI_VSTR("Scroll Page")),
+      std::make_pair(ICON_PF_XBOX_DPAD_LEFT_RIGHT, FSUI_VSTR("Change Page")),
+      std::make_pair(ICON_PF_XBOX_DPAD_UP_DOWN, FSUI_VSTR("Navigate")),
+      std::make_pair(ICON_PF_BUTTON_A, FSUI_VSTR("Select")), std::make_pair(ICON_PF_BUTTON_B, FSUI_VSTR("Back"))});
   }
   else
   {
-    SetFullscreenFooterText(std::array{std::make_pair(ICON_PF_ARROW_LEFT ICON_PF_ARROW_RIGHT, FSUI_VSTR("Change Page")),
+    SetFullscreenFooterText(std::array{std::make_pair(ICON_PF_PAGE_UP ICON_PF_PAGE_DOWN, FSUI_VSTR("Scroll Page")),
+                                       std::make_pair(ICON_PF_ARROW_LEFT ICON_PF_ARROW_RIGHT, FSUI_VSTR("Change Page")),
                                        std::make_pair(ICON_PF_ARROW_UP ICON_PF_ARROW_DOWN, FSUI_VSTR("Navigate")),
                                        std::make_pair(ICON_PF_ENTER, FSUI_VSTR("Select")),
                                        std::make_pair(ICON_PF_ESC, FSUI_VSTR("Back"))});
@@ -2233,21 +2257,27 @@ void FullscreenUI::DrawInterfaceSettingsPage()
                      });
   }
 
-  DrawToggleSetting(
-    bsi, FSUI_ICONVSTR(ICON_FA_LIST, "Open To Game List"),
-    FSUI_VSTR("When Big Picture mode is started, the game list will be displayed instead of the main menu."), "Main",
-    "FullscreenUIOpenToGameList", false);
+  static constexpr std::array gamepad_button_type_names = {"Automatic", "Xbox", "PlayStation"};
+  static constexpr std::array gamepad_button_type_display_names = {FSUI_NSTR("Automatic"), FSUI_NSTR("Xbox"),
+                                                                   FSUI_NSTR("PlayStation")};
+  static_assert(gamepad_button_type_names.size() == gamepad_button_type_display_names.size());
 
-  const bool use_ps_icons = GetEffectiveBoolSetting(bsi, "Main", "FullscreenUIDisplayPSIcons", false);
+  DrawStringListSetting(bsi, FSUI_ICONVSTR(ICON_FA_GAMEPAD, "Gamepad Button Type"),
+                        FSUI_VSTR("Selects between Xbox/PlayStation button icons in the footer and input binding."),
+                        "Main", "FullscreenUIGamepadButtonType", "Automatic", gamepad_button_type_display_names,
+                        gamepad_button_type_names, true, [](std::string_view) {
+                          // have to use transition because of the settings lock
+                          BeginTransition(&FullscreenUI::UpdateWidgetsSettings);
+                        });
+
   bool widgets_settings_changed = false;
-
   if (DrawToggleSetting(
         bsi, FSUI_ICONVSTR(ICON_FA_SHUFFLE, "Swap Gamepad Confirm/Cancel Buttons"),
         SmallString::from_format(
           FSUI_FSTR(
             "Swaps the confirm/cancel buttons on the gamepad, using {0} for confirming and {1} for cancelling."),
-          use_ps_icons ? ICON_PF_BUTTON_CIRCLE : ICON_PF_BUTTON_B,
-          use_ps_icons ? ICON_PF_BUTTON_CROSS : ICON_PF_BUTTON_A),
+          UIStyle.UsingPSIcons ? ICON_PF_BUTTON_CIRCLE : ICON_PF_BUTTON_B,
+          UIStyle.UsingPSIcons ? ICON_PF_BUTTON_CROSS : ICON_PF_BUTTON_A),
         "Main", "FullscreenUISwapGamepadFaceButtons", false))
   {
     if (IsGamepadInputSource())
@@ -2260,10 +2290,10 @@ void FullscreenUI::DrawInterfaceSettingsPage()
     widgets_settings_changed = true;
   }
 
-  widgets_settings_changed |= DrawToggleSetting(
-    bsi, FSUI_ICONVSTR(ICON_PF_GAMEPAD, "Use DualShock/DualSense Button Icons"),
-    FSUI_VSTR("Displays DualShock/DualSense button icons in the footer and input binding, instead of Xbox buttons."),
-    "Main", "FullscreenUIDisplayPSIcons", false);
+  DrawToggleSetting(
+    bsi, FSUI_ICONVSTR(ICON_FA_LIST, "Open To Game List"),
+    FSUI_VSTR("When Big Picture mode is started, the game list will be displayed instead of the main menu."), "Main",
+    "FullscreenUIOpenToGameList", false);
 
   widgets_settings_changed |=
     DrawToggleSetting(bsi, FSUI_ICONVSTR(ICON_FA_WINDOW_RESTORE, "Window Animations"),
@@ -2281,6 +2311,15 @@ void FullscreenUI::DrawInterfaceSettingsPage()
   widgets_settings_changed |= DrawToggleSetting(bsi, FSUI_ICONVSTR(ICON_FA_VOLUME_HIGH, "Sound Effects"),
                                                 FSUI_VSTR("Plays sound effects when navigating and activating menus."),
                                                 "Main", "FullscreenUISoundEffects", true);
+
+  if (DrawToggleSetting(
+        bsi, FSUI_ICONVSTR(ICON_FA_GLASS_WATER, "Blur Backgrounds"),
+        FSUI_VSTR("Applies a blur effect to the background when a menu is open to improve readability."), "Main",
+        "FullscreenUIBlurMenuBackground", true))
+  {
+    widgets_settings_changed = true;
+    BeginTransition({});
+  }
 
   // have to queue because we're holding the settings lock, and UpdateWidgetsSettings() reads it
   if (widgets_settings_changed)
@@ -2354,6 +2393,13 @@ void FullscreenUI::DrawInterfaceSettingsPage()
                     FSUI_VSTR("Shows on-screen-display messages when events occur. Errors and warnings are still "
                               "displayed regardless of this setting."),
                     "Display", "ShowOSDMessages", true);
+  DrawToggleSetting(
+    bsi, FSUI_ICONVSTR(ICON_FA_GLASS_WATER, "Blur Message Backgrounds"),
+    FSUI_VSTR("Applies a blur effect to the background behind on-screen messages to improve readability."), "Display",
+    "BlurOSDMessageBackgrounds", true);
+  DrawToggleSetting(bsi, FSUI_ICONVSTR(ICON_FA_WINDOW_MAXIMIZE, "Animate Messages"),
+                    FSUI_VSTR("Enables animation for on-screen messages when they appear and disappear."), "Display",
+                    "AnimateOSDMessages", true);
   DrawToggleSetting(bsi, FSUI_ICONVSTR(ICON_FA_PLAY, "Show Status Indicators"),
                     FSUI_VSTR("Shows persistent icons when turbo is active or when paused."), "Display",
                     "ShowStatusIndicators", true);
@@ -3113,7 +3159,7 @@ void FullscreenUI::DoSaveInputProfile(const std::string& name)
   const auto lock = Core::GetSettingsLock();
   SettingsInterface* ssi = GetEditingSettingsInterface();
   InputManager::CopyConfiguration(&dsi, *ssi, true, false, true, false);
-  if (dsi.Save())
+  if (dsi.Save(nullptr, Settings::GetSectionSaveOrder()))
     ShowToast(OSDMessageType::Quick, {}, fmt::format(FSUI_FSTR("Controller preset '{}' saved."), name));
   else
     ShowToast(OSDMessageType::Info, {}, fmt::format(FSUI_FSTR("Failed to save controller preset '{}'."), name));
@@ -3816,6 +3862,9 @@ void FullscreenUI::DrawGraphicsSettingsPage()
     options.emplace_back(FSUI_STR("Default"), current_adapter.has_value() && current_adapter->empty());
     for (const GPUDevice::AdapterInfo& adapter : s_settings_locals.graphics_adapter_list_cache)
     {
+      if (adapter.name.empty())
+        continue;
+
       const bool checked = (current_adapter.has_value() && current_adapter.value() == adapter.name);
       options.emplace_back(adapter.name, checked);
     }
@@ -3899,7 +3948,7 @@ void FullscreenUI::DrawGraphicsSettingsPage()
                             TinyString(FSUI_VSTR("Use Global Setting")) :
                             Settings::GetDisplayAspectRatioDisplayName(
                               Settings::ParseDisplayAspectRatio(
-                                GetEffectiveTinyStringSetting(bsi, ASPECT_RATIO_SECTION, ASPECT_RATIO_KEY, ""))
+                                GetEffectiveTinyStringSetting(bsi, ASPECT_RATIO_SECTION, ASPECT_RATIO_KEY))
                                 .value_or(Settings::DEFAULT_DISPLAY_ASPECT_RATIO))))
   {
     static constexpr const DisplayAspectRatio INHERIT_ASPECT_RATIO = {0, -1};
@@ -4017,7 +4066,7 @@ void FullscreenUI::DrawGraphicsSettingsPage()
                             FSUI_VSTR("Use Global Setting")))
   {
     const GPUDevice::AdapterInfo* selected_adapter = nullptr;
-    if (current_adapter.has_value())
+    if (current_adapter.has_value() && !current_adapter->empty())
     {
       for (const GPUDevice::AdapterInfo& ai : s_settings_locals.graphics_adapter_list_cache)
       {
@@ -4975,12 +5024,73 @@ void FullscreenUI::DrawAchievementsSettingsPage(std::unique_lock<std::mutex>& se
     bsi, FSUI_ICONVSTR(ICON_FA_MUSIC, "Sound Effects"),
     FSUI_VSTR("Plays sound effects for events such as achievement unlocks and leaderboard submissions."), "Cheevos",
     "SoundEffects", true, enabled);
+  DrawToggleSetting(bsi, FSUI_ICONVSTR(ICON_FA_DOWNLOAD, "Prefetch Badges"),
+                    FSUI_VSTR("Downloads all locked achievement badges while starting the game. This will reduce "
+                              "delays in the images being shown when unlocking achievements."),
+                    "Cheevos", "PrefetchBadges", Settings::DEFAULT_ACHIEVEMENT_BADGE_PREFETCH, enabled);
 
   DrawEnumSetting(bsi, FSUI_ICONVSTR(ICON_FA_ENVELOPE, "Notification Location"),
                   FSUI_VSTR("Selects the screen location for achievement and leaderboard notifications."), "Cheevos",
                   "NotificationLocation", Settings::DEFAULT_ACHIEVEMENT_NOTIFICATION_LOCATION,
                   &Settings::ParseNotificationLocation, &Settings::GetNotificationLocationName,
                   &Settings::GetNotificationLocationDisplayName, NotificationLocation::MaxCount, enabled);
+
+  const auto draw_scale_setting = [&bsi, &enabled](const char* key, std::string_view title, std::string_view summary,
+                                                   std::string_view custom_title, std::string_view custom_summary) {
+    const bool game_settings = IsEditingGameSettings(bsi);
+    const std::optional<int> value =
+      bsi->GetOptionalIntValue("Cheevos", key, game_settings ? std::nullopt : std::optional<int>(-1));
+    const bool is_custom = (value.has_value() && value.value() > 0);
+
+    std::string_view mode_text;
+    if (!value.has_value())
+      mode_text = FSUI_VSTR("Use Global Setting");
+    else if (value.value() < 0)
+      mode_text = FSUI_VSTR("Use OSD Scale");
+    else if (value.value() == Settings::ACHIEVEMENT_NOTIFICATION_SCALE_AUTO)
+      mode_text = FSUI_VSTR("Automatic");
+    else
+      mode_text = FSUI_VSTR("Custom");
+
+    if (MenuButtonWithValue(title, summary, mode_text, enabled))
+    {
+      ChoiceDialogOptions options;
+      if (game_settings)
+        options.emplace_back(FSUI_STR("Use Global Setting"), !value.has_value());
+      options.emplace_back(FSUI_STR("Automatic"),
+                           value.has_value() && value.value() == Settings::ACHIEVEMENT_NOTIFICATION_SCALE_AUTO);
+      options.emplace_back(FSUI_STR("Use OSD Scale"), value.has_value() && value.value() < 0);
+      options.emplace_back(FSUI_STR("Custom"), is_custom);
+
+      OpenChoiceDialog(title, false, std::move(options),
+                       [key, game_settings](s32 index, const std::string& title, bool checked) {
+                         if (index < 0)
+                           return;
+
+                         const auto lock = Core::GetSettingsLock();
+                         SettingsInterface* bsi = GetEditingSettingsInterface(game_settings);
+                         const s32 offset = static_cast<s32>(BoolToUInt32(game_settings));
+
+                         if (game_settings && index == 0)
+                           bsi->DeleteValue("Cheevos", key);
+                         else if (index == offset + 0)
+                           bsi->SetIntValue("Cheevos", key, 0);
+                         else if (index == offset + 1)
+                           bsi->SetIntValue("Cheevos", key, -1);
+                         else if (index == offset + 2)
+                           bsi->SetIntValue("Cheevos", key, 100);
+
+                         SetSettingsChanged(bsi);
+                       });
+    }
+
+    if (is_custom)
+      DrawIntSpinBoxSetting(bsi, custom_title, custom_summary, "Cheevos", key, 100, 1, 500, 1, "%d%%", enabled);
+  };
+  draw_scale_setting("NotificationScale", FSUI_ICONVSTR(ICON_FA_MAGNIFYING_GLASS, "Notification Size"),
+                     FSUI_VSTR("Determines the size of achievement notification popups."),
+                     FSUI_ICONVSTR(ICON_FA_EXPAND, "Custom Notification Scale"),
+                     FSUI_VSTR("Sets the custom scale percentage for achievement notifications."));
 
   MenuHeading(FSUI_VSTR("Progress Tracking"));
 
@@ -4996,6 +5106,10 @@ void FullscreenUI::DrawAchievementsSettingsPage(std::unique_lock<std::mutex>& se
                   "Cheevos", "IndicatorLocation", Settings::DEFAULT_ACHIEVEMENT_INDICATOR_LOCATION,
                   &Settings::ParseNotificationLocation, &Settings::GetNotificationLocationName,
                   &Settings::GetNotificationLocationDisplayName, NotificationLocation::MaxCount, enabled);
+  draw_scale_setting("IndicatorScale", FSUI_ICONVSTR(ICON_FA_MAGNIFYING_GLASS, "Indicator Scale"),
+                     FSUI_VSTR("Determines the size of challenge/progress indicators."),
+                     FSUI_ICONVSTR(ICON_FA_EXPAND, "Custom Indicator Scale"),
+                     FSUI_VSTR("Sets the custom scale percentage for challenge/progress indicators."));
 
   DrawToggleSetting(
     bsi, FSUI_ICONVSTR(ICON_FA_BARS_PROGRESS, "Progress Indicators"),
@@ -5403,8 +5517,6 @@ void FullscreenUI::DrawPatchesOrCheatsSettingsPage(bool cheats)
           BeginFixedPopupDialog(LayoutScale(LAYOUT_SMALL_POPUP_PADDING), LayoutScale(LAYOUT_SMALL_POPUP_PADDING),
                                 LayoutScale(600.0f, 0.0f)))
       {
-        BeginMenuButtons();
-
         bool range_value_changed = false;
 
         BeginHorizontalMenuButtons(4);
@@ -5439,6 +5551,7 @@ void FullscreenUI::DrawPatchesOrCheatsSettingsPage(bool cheats)
           if (range_value < static_cast<s32>(ci.option_range_start))
           {
             bsi->RemoveFromStringList(section, Cheats::PATCH_ENABLE_CONFIG_KEY, ci.name.c_str());
+            bsi->DeleteValue(section, ci.name.c_str());
             if (it != enable_list.end())
               enable_list.erase(it);
           }
@@ -5452,6 +5565,8 @@ void FullscreenUI::DrawPatchesOrCheatsSettingsPage(bool cheats)
 
           SetSettingsChanged(bsi);
         }
+
+        BeginMenuButtons();
 
         if (MenuButtonWithoutSummary(FSUI_VSTR("OK"), true, LAYOUT_CENTER_ALIGN_TEXT))
           CloseFixedPopupDialog();

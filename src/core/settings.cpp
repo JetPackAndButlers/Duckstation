@@ -117,14 +117,13 @@ void SettingInfo::CopyValue(SettingsInterface* dest_si, const SettingsInterface&
   }
 }
 
-const std::array<float, 5> GPUSettings::DEFAULT_DISPLAY_OSD_MESSAGE_DURATIONS = {{
-  15.0f,                             // Error
-  10.0f,                             // Warning
-  5.0f,                              // Info
-  2.5f,                              // Quick
-  std::numeric_limits<float>::max(), // Persistent
+const std::array<float, 4> GPUSettings::DEFAULT_DISPLAY_OSD_MESSAGE_DURATIONS = {{
+  15.0f, // Error
+  10.0f, // Warning
+  5.0f,  // Info
+  2.5f,  // Quick
 }};
-static_assert(static_cast<size_t>(OSDMessageType::MaxCount) ==
+static_assert(static_cast<size_t>(OSDMessageType::Persistent) ==
               GPUSettings::DEFAULT_DISPLAY_OSD_MESSAGE_DURATIONS.size());
 
 GPUSettings::GPUSettings()
@@ -155,6 +154,59 @@ const MediaCaptureBackend Settings::DEFAULT_MEDIA_CAPTURE_BACKEND = MediaCapture
 #else
 const MediaCaptureBackend Settings::DEFAULT_MEDIA_CAPTURE_BACKEND = MediaCaptureBackend::MaxCount;
 #endif
+
+std::span<const char* const> Settings::GetSectionSaveOrder()
+{
+  static constexpr std::array order = {
+    // clang-format off
+    "Patches",
+    "Cheats",
+    "Main",
+    "UI",
+    "GameListTableView",
+    "AutoUpdater",
+    "Folders",
+    "GameList",
+    "Cheevos",
+    "Logging",
+    "BIOS",
+    "Console",
+    "CPU",
+    "GPU",
+    "Display",
+    "CDROM",
+    "Audio",
+    "MemoryCards",
+    "TextureReplacements",
+    "MediaCapture",
+    "InternalPostProcessing",
+    "PostProcessing",
+    "BorderOverlay",
+    "InputSources",
+#ifdef ENABLE_SDL
+    "SDLExtra",
+#endif
+    "ControllerPorts",
+    "Pad1",
+    "Pad2",
+    "Pad3",
+    "Pad4",
+    "Pad5",
+    "Pad6",
+    "Pad7",
+    "Pad8",
+    "Hotkeys",
+    "PIO",
+    "SIO",
+    "PCDrv",
+    "Debug",
+    "DebugWindows",
+    "Hacks",
+    // clang-format on
+  };
+
+  return order;
+}
 
 Settings::Settings()
 {
@@ -206,7 +258,7 @@ void Settings::Load(const SettingsInterface& si, const SettingsInterface& contro
 {
   region =
     ParseConsoleRegionName(
-      si.GetStringValue("Console", "Region", Settings::GetConsoleRegionName(Settings::DEFAULT_CONSOLE_REGION)).c_str())
+      si.GetStringViewValue("Console", "Region", Settings::GetConsoleRegionName(Settings::DEFAULT_CONSOLE_REGION)))
       .value_or(DEFAULT_CONSOLE_REGION);
   cpu_enable_8mb_ram = si.GetBoolValue("Console", "Enable8MBRAM", false);
 
@@ -232,10 +284,9 @@ void Settings::Load(const SettingsInterface& si, const SettingsInterface& contro
   runahead_frames = static_cast<u8>(std::min(si.GetUIntValue("Main", "RunaheadFrameCount", 0u), 255u));
   runahead_for_analog_input = si.GetBoolValue("Main", "RunaheadForAnalogInput", false);
 
-  cpu_execution_mode =
-    ParseCPUExecutionMode(
-      si.GetStringValue("CPU", "ExecutionMode", GetCPUExecutionModeName(DEFAULT_CPU_EXECUTION_MODE)).c_str())
-      .value_or(DEFAULT_CPU_EXECUTION_MODE);
+  cpu_execution_mode = ParseCPUExecutionMode(si.GetStringViewValue("CPU", "ExecutionMode",
+                                                                   GetCPUExecutionModeName(DEFAULT_CPU_EXECUTION_MODE)))
+                         .value_or(DEFAULT_CPU_EXECUTION_MODE);
   cpu_overclock_numerator = std::max(si.GetUIntValue("CPU", "OverclockNumerator", 1u), 1u);
   cpu_overclock_denominator = std::max(si.GetUIntValue("CPU", "OverclockDenominator", 1u), 1u);
   cpu_overclock_enable = si.GetBoolValue("CPU", "OverclockEnable", false);
@@ -243,13 +294,13 @@ void Settings::Load(const SettingsInterface& si, const SettingsInterface& contro
   cpu_recompiler_memory_exceptions = si.GetBoolValue("CPU", "RecompilerMemoryExceptions", false);
   cpu_recompiler_block_linking = si.GetBoolValue("CPU", "RecompilerBlockLinking", true);
   cpu_recompiler_icache = si.GetBoolValue("CPU", "RecompilerICache", false);
-  cpu_fastmem_mode = ParseCPUFastmemMode(
-                       si.GetStringValue("CPU", "FastmemMode", GetCPUFastmemModeName(DEFAULT_CPU_FASTMEM_MODE)).c_str())
-                       .value_or(DEFAULT_CPU_FASTMEM_MODE);
+  cpu_fastmem_mode =
+    ParseCPUFastmemMode(si.GetStringViewValue("CPU", "FastmemMode", GetCPUFastmemModeName(DEFAULT_CPU_FASTMEM_MODE)))
+      .value_or(DEFAULT_CPU_FASTMEM_MODE);
 
-  gpu_renderer = ParseRendererName(si.GetStringValue("GPU", "Renderer", GetRendererName(DEFAULT_GPU_RENDERER)).c_str())
+  gpu_renderer = ParseRendererName(si.GetStringViewValue("GPU", "Renderer", GetRendererName(DEFAULT_GPU_RENDERER)))
                    .value_or(DEFAULT_GPU_RENDERER);
-  gpu_adapter = si.GetStringValue("GPU", "Adapter", "");
+  gpu_adapter = si.GetStringViewValue("GPU", "Adapter", "");
   gpu_resolution_scale = static_cast<u8>(si.GetUIntValue("GPU", "ResolutionScale", 1u));
   gpu_automatic_resolution_scale = (gpu_resolution_scale == 0);
   gpu_multisamples = static_cast<u8>(si.GetUIntValue("GPU", "Multisamples", 1u));
@@ -272,34 +323,32 @@ void Settings::Load(const SettingsInterface& si, const SettingsInterface& contro
   gpu_use_software_renderer_for_memory_states = si.GetBoolValue("GPU", "UseSoftwareRendererForMemoryStates", false);
   gpu_scaled_interlacing = si.GetBoolValue("GPU", "ScaledInterlacing", true);
   gpu_force_round_texcoords = si.GetBoolValue("GPU", "ForceRoundTextureCoordinates", false);
-  gpu_texture_filter =
-    ParseTextureFilterName(
-      si.GetStringValue("GPU", "TextureFilter", GetTextureFilterName(DEFAULT_GPU_TEXTURE_FILTER)).c_str())
-      .value_or(DEFAULT_GPU_TEXTURE_FILTER);
+  gpu_texture_filter = ParseTextureFilterName(si.GetStringViewValue("GPU", "TextureFilter",
+                                                                    GetTextureFilterName(DEFAULT_GPU_TEXTURE_FILTER)))
+                         .value_or(DEFAULT_GPU_TEXTURE_FILTER);
   gpu_sprite_texture_filter =
     ParseTextureFilterName(
-      si.GetStringValue("GPU", "SpriteTextureFilter", GetTextureFilterName(DEFAULT_GPU_TEXTURE_FILTER)).c_str())
+      si.GetStringViewValue("GPU", "SpriteTextureFilter", GetTextureFilterName(DEFAULT_GPU_TEXTURE_FILTER)))
       .value_or(DEFAULT_GPU_TEXTURE_FILTER);
   gpu_dithering_mode =
     ParseGPUDitheringModeName(
-      si.GetStringValue("GPU", "DitheringMode", GetGPUDitheringModeName(DEFAULT_GPU_DITHERING_MODE)).c_str())
+      si.GetStringViewValue("GPU", "DitheringMode", GetGPUDitheringModeName(DEFAULT_GPU_DITHERING_MODE)))
       .value_or(DEFAULT_GPU_DITHERING_MODE);
   gpu_line_detect_mode =
     ParseLineDetectModeName(
-      si.GetStringValue("GPU", "LineDetectMode", GetLineDetectModeName(DEFAULT_GPU_LINE_DETECT_MODE)).c_str())
+      si.GetStringViewValue("GPU", "LineDetectMode", GetLineDetectModeName(DEFAULT_GPU_LINE_DETECT_MODE)))
       .value_or(DEFAULT_GPU_LINE_DETECT_MODE);
   gpu_downsample_mode =
     ParseDownsampleModeName(
-      si.GetStringValue("GPU", "DownsampleMode", GetDownsampleModeName(DEFAULT_GPU_DOWNSAMPLE_MODE)).c_str())
+      si.GetStringViewValue("GPU", "DownsampleMode", GetDownsampleModeName(DEFAULT_GPU_DOWNSAMPLE_MODE)))
       .value_or(DEFAULT_GPU_DOWNSAMPLE_MODE);
   gpu_downsample_scale = static_cast<u8>(si.GetUIntValue("GPU", "DownsampleScale", 1));
-  gpu_wireframe_mode =
-    ParseGPUWireframeMode(
-      si.GetStringValue("GPU", "WireframeMode", GetGPUWireframeModeName(DEFAULT_GPU_WIREFRAME_MODE)).c_str())
-      .value_or(DEFAULT_GPU_WIREFRAME_MODE);
+  gpu_wireframe_mode = ParseGPUWireframeMode(si.GetStringViewValue("GPU", "WireframeMode",
+                                                                   GetGPUWireframeModeName(DEFAULT_GPU_WIREFRAME_MODE)))
+                         .value_or(DEFAULT_GPU_WIREFRAME_MODE);
   gpu_force_video_timing =
     ParseForceVideoTimingName(
-      si.GetStringValue("GPU", "ForceVideoTiming", GetForceVideoTimingName(DEFAULT_FORCE_VIDEO_TIMING_MODE)).c_str())
+      si.GetStringViewValue("GPU", "ForceVideoTiming", GetForceVideoTimingName(DEFAULT_FORCE_VIDEO_TIMING_MODE)))
       .value_or(DEFAULT_FORCE_VIDEO_TIMING_MODE);
   gpu_widescreen_rendering = gpu_widescreen_hack = si.GetBoolValue("GPU", "WidescreenHack", false);
   gpu_modulation_crop = si.GetBoolValue("GPU", "EnableModulationCrop", false);
@@ -314,55 +363,45 @@ void Settings::Load(const SettingsInterface& si, const SettingsInterface& contro
 
   display_deinterlacing_mode =
     ParseDisplayDeinterlacingMode(
-      si.GetStringValue("GPU", "DeinterlacingMode", GetDisplayDeinterlacingModeName(DEFAULT_DISPLAY_DEINTERLACING_MODE))
-        .c_str())
+      si.GetStringViewValue("GPU", "DeinterlacingMode",
+                            GetDisplayDeinterlacingModeName(DEFAULT_DISPLAY_DEINTERLACING_MODE)))
       .value_or(DEFAULT_DISPLAY_DEINTERLACING_MODE);
-  display_crop_mode =
-    ParseDisplayCropMode(
-      si.GetStringValue("Display", "CropMode", GetDisplayCropModeName(DEFAULT_DISPLAY_CROP_MODE)).c_str())
-      .value_or(DEFAULT_DISPLAY_CROP_MODE);
+  display_crop_mode = ParseDisplayCropMode(
+                        si.GetStringViewValue("Display", "CropMode", GetDisplayCropModeName(DEFAULT_DISPLAY_CROP_MODE)))
+                        .value_or(DEFAULT_DISPLAY_CROP_MODE);
   display_aspect_ratio =
-    ParseDisplayAspectRatio(si.GetStringValue("Display", "AspectRatio")).value_or(DEFAULT_DISPLAY_ASPECT_RATIO);
-  display_fine_crop_mode = ParseDisplayFineCropMode(si.GetStringValue("Display", "FineCropMode").c_str())
-                             .value_or(DEFAULT_DISPLAY_FINE_CROP_MODE);
-  display_fine_crop_amount[0] = static_cast<s16>(std::clamp<s32>(
-    si.GetIntValue("Display", "FineCropLeft", 0), std::numeric_limits<s16>::min(), std::numeric_limits<s16>::max()));
-  display_fine_crop_amount[1] = static_cast<s16>(std::clamp<s32>(
-    si.GetIntValue("Display", "FineCropTop", 0), std::numeric_limits<s16>::min(), std::numeric_limits<s16>::max()));
-  display_fine_crop_amount[2] = static_cast<s16>(std::clamp<s32>(
-    si.GetIntValue("Display", "FineCropRight", 0), std::numeric_limits<s16>::min(), std::numeric_limits<s16>::max()));
-  display_fine_crop_amount[3] = static_cast<s16>(std::clamp<s32>(
-    si.GetIntValue("Display", "FineCropBottom", 0), std::numeric_limits<s16>::min(), std::numeric_limits<s16>::max()));
-  display_alignment =
-    ParseDisplayAlignment(
-      si.GetStringValue("Display", "Alignment", GetDisplayAlignmentName(DEFAULT_DISPLAY_ALIGNMENT)).c_str())
-      .value_or(DEFAULT_DISPLAY_ALIGNMENT);
+    ParseDisplayAspectRatio(si.GetStringViewValue("Display", "AspectRatio")).value_or(DEFAULT_DISPLAY_ASPECT_RATIO);
+  display_fine_crop_mode =
+    ParseDisplayFineCropMode(si.GetStringViewValue("Display", "FineCropMode")).value_or(DEFAULT_DISPLAY_FINE_CROP_MODE);
+  display_fine_crop_amount[0] = si.GetSaturatedIntValue<s16>("Display", "FineCropLeft", 0);
+  display_fine_crop_amount[1] = si.GetSaturatedIntValue<s16>("Display", "FineCropTop", 0);
+  display_fine_crop_amount[2] = si.GetSaturatedIntValue<s16>("Display", "FineCropRight", 0);
+  display_fine_crop_amount[3] = si.GetSaturatedIntValue<s16>("Display", "FineCropBottom", 0);
+  display_alignment = ParseDisplayAlignment(si.GetStringViewValue("Display", "Alignment",
+                                                                  GetDisplayAlignmentName(DEFAULT_DISPLAY_ALIGNMENT)))
+                        .value_or(DEFAULT_DISPLAY_ALIGNMENT);
   display_rotation =
-    ParseDisplayRotation(
-      si.GetStringValue("Display", "Rotation", GetDisplayRotationName(DEFAULT_DISPLAY_ROTATION)).c_str())
+    ParseDisplayRotation(si.GetStringViewValue("Display", "Rotation", GetDisplayRotationName(DEFAULT_DISPLAY_ROTATION)))
       .value_or(DEFAULT_DISPLAY_ROTATION);
   display_scaling =
-    ParseDisplayScaling(si.GetStringValue("Display", "Scaling", GetDisplayScalingName(DEFAULT_DISPLAY_SCALING)).c_str())
+    ParseDisplayScaling(si.GetStringViewValue("Display", "Scaling", GetDisplayScalingName(DEFAULT_DISPLAY_SCALING)))
       .value_or(DEFAULT_DISPLAY_SCALING);
-  display_scaling_24bit =
-    ParseDisplayScaling(
-      si.GetStringValue("Display", "Scaling24Bit", GetDisplayScalingName(DEFAULT_DISPLAY_SCALING)).c_str())
-      .value_or(DEFAULT_DISPLAY_SCALING);
+  display_scaling_24bit = ParseDisplayScaling(si.GetStringViewValue("Display", "Scaling24Bit",
+                                                                    GetDisplayScalingName(DEFAULT_DISPLAY_SCALING)))
+                            .value_or(DEFAULT_DISPLAY_SCALING);
   display_exclusive_fullscreen_control =
     ParseDisplayExclusiveFullscreenControl(
-      si.GetStringValue("Display", "ExclusiveFullscreenControl",
-                        GetDisplayExclusiveFullscreenControlName(DEFAULT_DISPLAY_EXCLUSIVE_FULLSCREEN_CONTROL))
-        .c_str())
+      si.GetStringViewValue("Display", "ExclusiveFullscreenControl",
+                            GetDisplayExclusiveFullscreenControlName(DEFAULT_DISPLAY_EXCLUSIVE_FULLSCREEN_CONTROL)))
       .value_or(DEFAULT_DISPLAY_EXCLUSIVE_FULLSCREEN_CONTROL);
   display_screenshot_mode =
     ParseDisplayScreenshotMode(
-      si.GetStringValue("Display", "ScreenshotMode", GetDisplayScreenshotModeName(DEFAULT_DISPLAY_SCREENSHOT_MODE))
-        .c_str())
+      si.GetStringViewValue("Display", "ScreenshotMode", GetDisplayScreenshotModeName(DEFAULT_DISPLAY_SCREENSHOT_MODE)))
       .value_or(DEFAULT_DISPLAY_SCREENSHOT_MODE);
   display_screenshot_format =
-    ParseDisplayScreenshotFormat(si.GetStringValue("Display", "ScreenshotFormat",
-                                                   GetDisplayScreenshotFormatName(DEFAULT_DISPLAY_SCREENSHOT_FORMAT))
-                                   .c_str())
+    ParseDisplayScreenshotFormat(
+      si.GetStringViewValue("Display", "ScreenshotFormat",
+                            GetDisplayScreenshotFormatName(DEFAULT_DISPLAY_SCREENSHOT_FORMAT)))
       .value_or(DEFAULT_DISPLAY_SCREENSHOT_FORMAT);
   display_screenshot_quality = static_cast<u8>(
     std::clamp<u32>(si.GetUIntValue("Display", "ScreenshotQuality", DEFAULT_DISPLAY_SCREENSHOT_QUALITY), 1, 100));
@@ -379,6 +418,8 @@ void Settings::Load(const SettingsInterface& si, const SettingsInterface& contro
   display_line_start_offset = static_cast<s8>(si.GetIntValue("Display", "LineStartOffset", 0));
   display_line_end_offset = static_cast<s8>(si.GetIntValue("Display", "LineEndOffset", 0));
   display_show_messages = si.GetBoolValue("Display", "ShowOSDMessages", true);
+  display_animate_messages = si.GetBoolValue("Display", "AnimateOSDMessages", true);
+  display_blur_message_backgrounds = si.GetBoolValue("Display", "BlurOSDMessageBackgrounds", true);
   display_show_fps = si.GetBoolValue("Display", "ShowFPS", false);
   display_show_speed = si.GetBoolValue("Display", "ShowSpeed", false);
   display_show_gpu_stats = si.GetBoolValue("Display", "ShowGPUStatistics", false);
@@ -394,27 +435,26 @@ void Settings::Load(const SettingsInterface& si, const SettingsInterface& contro
   display_osd_scale = si.GetFloatValue("Display", "OSDScale", DEFAULT_OSD_SCALE);
   display_osd_margin = std::max(si.GetFloatValue("Display", "OSDMargin", ImGuiManager::DEFAULT_SCREEN_MARGIN), 0.0f);
 
-  for (size_t i = 0; i < static_cast<size_t>(OSDMessageType::Persistent); i++)
+  for (size_t i = 0; i < display_osd_message_duration.size(); i++)
   {
     display_osd_message_duration[i] = si.GetFloatValue(
       "Display", TinyString::from_format("OSD{}Duration", GetDisplayOSDMessageTypeName(static_cast<OSDMessageType>(i))),
       DEFAULT_DISPLAY_OSD_MESSAGE_DURATIONS[i]);
   }
-  display_osd_message_duration[static_cast<size_t>(OSDMessageType::Persistent)] = std::numeric_limits<float>::max();
-  display_osd_message_location = ParseNotificationLocation(si.GetStringValue("Display", "OSDMessageLocation").c_str())
+  display_osd_message_location = ParseNotificationLocation(si.GetStringViewValue("Display", "OSDMessageLocation"))
                                    .value_or(DEFAULT_OSD_MESSAGE_LOCATION);
 
-  save_state_compression = ParseSaveStateCompressionModeName(
-                             si.GetStringValue("Main", "SaveStateCompression",
-                                               GetSaveStateCompressionModeName(DEFAULT_SAVE_STATE_COMPRESSION_MODE))
-                               .c_str())
-                             .value_or(DEFAULT_SAVE_STATE_COMPRESSION_MODE);
+  save_state_compression =
+    ParseSaveStateCompressionModeName(
+      si.GetStringViewValue("Main", "SaveStateCompression",
+                            GetSaveStateCompressionModeName(DEFAULT_SAVE_STATE_COMPRESSION_MODE)))
+      .value_or(DEFAULT_SAVE_STATE_COMPRESSION_MODE);
 
   cdrom_readahead_sectors =
     static_cast<u8>(si.GetIntValue("CDROM", "ReadaheadSectors", DEFAULT_CDROM_READAHEAD_SECTORS));
   cdrom_mechacon_version =
     ParseCDROMMechVersionName(
-      si.GetStringValue("CDROM", "MechaconVersion", GetCDROMMechVersionName(DEFAULT_CDROM_MECHACON_VERSION)).c_str())
+      si.GetStringViewValue("CDROM", "MechaconVersion", GetCDROMMechVersionName(DEFAULT_CDROM_MECHACON_VERSION)))
       .value_or(DEFAULT_CDROM_MECHACON_VERSION);
   cdrom_region_check = si.GetBoolValue("CDROM", "RegionCheck", false);
   cdrom_subq_skew = si.GetBoolValue("CDROM", "SubQSkew", false);
@@ -423,10 +463,8 @@ void Settings::Load(const SettingsInterface& si, const SettingsInterface& contro
   cdrom_ignore_host_subcode = si.GetBoolValue("CDROM", "IgnoreHostSubcode", false);
   cdrom_mute_cd_audio = si.GetBoolValue("CDROM", "MuteCDAudio", false);
   cdrom_auto_disc_change = si.GetBoolValue("CDROM", "AutoDiscChange", false);
-  cdrom_read_speedup =
-    Truncate8(std::min<u32>(si.GetUIntValue("CDROM", "ReadSpeedup", 1u), std::numeric_limits<u8>::max()));
-  cdrom_seek_speedup =
-    Truncate8(std::min<u32>(si.GetUIntValue("CDROM", "SeekSpeedup", 1u), std::numeric_limits<u8>::max()));
+  cdrom_read_speedup = si.GetSaturatedIntValue<u8>("CDROM", "ReadSpeedup", 1);
+  cdrom_seek_speedup = si.GetSaturatedIntValue<u8>("CDROM", "SeekSpeedup", 1);
   cdrom_max_seek_speedup_cycles =
     std::max(si.GetUIntValue("CDROM", "MaxSeekSpeedupCycles", DEFAULT_CDROM_MAX_SEEK_SPEEDUP_CYCLES), 1u);
   cdrom_max_read_speedup_cycles =
@@ -435,15 +473,13 @@ void Settings::Load(const SettingsInterface& si, const SettingsInterface& contro
 
   audio_backend =
     AudioStream::ParseBackendName(
-      si.GetStringValue("Audio", "Backend", AudioStream::GetBackendName(AudioStream::DEFAULT_BACKEND)).c_str())
+      si.GetStringViewValue("Audio", "Backend", AudioStream::GetBackendName(AudioStream::DEFAULT_BACKEND)))
       .value_or(AudioStream::DEFAULT_BACKEND);
-  audio_driver = si.GetStringValue("Audio", "Driver");
-  audio_output_device = si.GetStringValue("Audio", "OutputDevice");
+  audio_driver = si.GetStringViewValue("Audio", "Driver");
+  audio_output_device = si.GetStringViewValue("Audio", "OutputDevice");
   audio_stream_parameters.Load(si, "Audio");
-  audio_output_volume =
-    Truncate8(std::min<u32>(si.GetUIntValue("Audio", "OutputVolume", 100), std::numeric_limits<u8>::max()));
-  audio_fast_forward_volume =
-    Truncate8(std::min<u32>(si.GetUIntValue("Audio", "FastForwardVolume", 100), std::numeric_limits<u8>::max()));
+  audio_output_volume = si.GetSaturatedIntValue<u8>("Audio", "OutputVolume", 100);
+  audio_fast_forward_volume = si.GetSaturatedIntValue<u8>("Audio", "FastForwardVolume", 100);
 
   audio_output_muted = si.GetBoolValue("Audio", "OutputMuted", false);
 
@@ -459,11 +495,9 @@ void Settings::Load(const SettingsInterface& si, const SettingsInterface& contro
   bios_patch_fast_boot = si.GetBoolValue("BIOS", "PatchFastBoot", DEFAULT_FAST_BOOT_VALUE);
   bios_fast_forward_boot = si.GetBoolValue("BIOS", "FastForwardBoot", false);
 
-  multitap_mode =
-    ParseMultitapModeName(
-      controller_si.GetStringValue("ControllerPorts", "MultitapMode", GetMultitapModeName(DEFAULT_MULTITAP_MODE))
-        .c_str())
-      .value_or(DEFAULT_MULTITAP_MODE);
+  multitap_mode = ParseMultitapModeName(controller_si.GetStringViewValue("ControllerPorts", "MultitapMode",
+                                                                         GetMultitapModeName(DEFAULT_MULTITAP_MODE)))
+                    .value_or(DEFAULT_MULTITAP_MODE);
 
   const std::array<bool, 2> mtap_enabled = {{IsPort1MultitapEnabled(), IsPort2MultitapEnabled()}};
   for (u32 pad = 0; pad < NUM_CONTROLLER_AND_CARD_PORTS; pad++)
@@ -477,21 +511,21 @@ void Settings::Load(const SettingsInterface& si, const SettingsInterface& contro
     }
 
     const ControllerType default_type = (pad == 0) ? DEFAULT_CONTROLLER_1_TYPE : DEFAULT_CONTROLLER_2_TYPE;
-    const Controller::ControllerInfo* cinfo = Controller::GetControllerInfo(controller_si.GetTinyStringValue(
+    const Controller::ControllerInfo* cinfo = Controller::GetControllerInfo(controller_si.GetStringViewValue(
       Controller::GetSettingsSection(pad).c_str(), "Type", Controller::GetControllerInfo(default_type).name));
     controller_types[pad] = cinfo ? cinfo->type : default_type;
   }
 
   memory_card_types[0] =
     ParseMemoryCardTypeName(
-      si.GetStringValue("MemoryCards", "Card1Type", GetMemoryCardTypeName(DEFAULT_MEMORY_CARD_1_TYPE)).c_str())
+      si.GetStringViewValue("MemoryCards", "Card1Type", GetMemoryCardTypeName(DEFAULT_MEMORY_CARD_1_TYPE)))
       .value_or(DEFAULT_MEMORY_CARD_1_TYPE);
   memory_card_types[1] =
     ParseMemoryCardTypeName(
-      si.GetStringValue("MemoryCards", "Card2Type", GetMemoryCardTypeName(DEFAULT_MEMORY_CARD_2_TYPE)).c_str())
+      si.GetStringViewValue("MemoryCards", "Card2Type", GetMemoryCardTypeName(DEFAULT_MEMORY_CARD_2_TYPE)))
       .value_or(DEFAULT_MEMORY_CARD_2_TYPE);
-  memory_card_paths[0] = si.GetStringValue("MemoryCards", "Card1Path", "");
-  memory_card_paths[1] = si.GetStringValue("MemoryCards", "Card2Path", "");
+  memory_card_paths[0] = si.GetStringViewValue("MemoryCards", "Card1Path");
+  memory_card_paths[1] = si.GetStringViewValue("MemoryCards", "Card2Path");
   memory_card_use_playlist_title = si.GetBoolValue("MemoryCards", "UsePlaylistTitle", true);
   memory_card_fast_forward_access = si.GetBoolValue("MemoryCards", "FastForwardAccess", false);
 
@@ -506,20 +540,23 @@ void Settings::Load(const SettingsInterface& si, const SettingsInterface& contro
   achievements_leaderboard_trackers = si.GetBoolValue("Cheevos", "LeaderboardTrackers", true);
   achievements_sound_effects = si.GetBoolValue("Cheevos", "SoundEffects", true);
   achievements_progress_indicators = si.GetBoolValue("Cheevos", "ProgressIndicators", true);
+  achievements_prefetch_badges = si.GetBoolValue("Cheevos", "PrefetchBadges", false);
   achievements_notification_location =
-    ParseNotificationLocation(si.GetStringValue("Cheevos", "NotificationLocation").c_str())
+    ParseNotificationLocation(si.GetStringViewValue("Cheevos", "NotificationLocation"))
       .value_or(DEFAULT_ACHIEVEMENT_NOTIFICATION_LOCATION);
-  achievements_indicator_location = ParseNotificationLocation(si.GetStringValue("Cheevos", "IndicatorLocation").c_str())
+  achievements_indicator_location = ParseNotificationLocation(si.GetStringViewValue("Cheevos", "IndicatorLocation"))
                                       .value_or(DEFAULT_ACHIEVEMENT_INDICATOR_LOCATION);
   achievements_challenge_indicator_mode =
-    ParseAchievementChallengeIndicatorMode(si.GetStringValue("Cheevos", "ChallengeIndicatorMode").c_str())
+    ParseAchievementChallengeIndicatorMode(si.GetStringViewValue("Cheevos", "ChallengeIndicatorMode"))
       .value_or(DEFAULT_ACHIEVEMENT_CHALLENGE_INDICATOR_MODE);
   achievements_notification_duration =
-    Truncate8(std::min<u32>(si.GetUIntValue("Cheevos", "NotificationsDuration", DEFAULT_ACHIEVEMENT_NOTIFICATION_TIME),
-                            std::numeric_limits<u8>::max()));
+    si.GetSaturatedIntValue<u8>("Cheevos", "NotificationsDuration", DEFAULT_ACHIEVEMENT_NOTIFICATION_TIME);
   achievements_leaderboard_duration =
-    Truncate8(std::min<u32>(si.GetUIntValue("Cheevos", "LeaderboardsDuration", DEFAULT_LEADERBOARD_NOTIFICATION_TIME),
-                            std::numeric_limits<u8>::max()));
+    si.GetSaturatedIntValue<u8>("Cheevos", "LeaderboardsDuration", DEFAULT_LEADERBOARD_NOTIFICATION_TIME);
+  achievements_notification_scale =
+    si.GetSaturatedIntValue<s16>("Cheevos", "NotificationScale", ACHIEVEMENT_NOTIFICATION_SCALE_AUTO);
+  achievements_indicator_scale =
+    si.GetSaturatedIntValue<s16>("Cheevos", "IndicatorScale", ACHIEVEMENT_NOTIFICATION_SCALE_AUTO);
 
 #ifndef __ANDROID__
   enable_gdb_server = si.GetBoolValue("Debug", "EnableGDBServer");
@@ -560,33 +597,33 @@ void Settings::Load(const SettingsInterface& si, const SettingsInterface& contro
     si.GetUIntValue("TextureReplacements", "MaxReplacementCacheVRAMUsage",
                     TextureReplacementSettings::Configuration::DEFAULT_MAX_REPLACEMENT_CACHE_VRAM_USAGE_MB);
 
-  texture_replacements.config.max_vram_write_splits = Truncate16(
-    std::min<u32>(si.GetUIntValue("TextureReplacements", "MaxVRAMWriteSplits", 0u), std::numeric_limits<u16>::max()));
-  texture_replacements.config.max_vram_write_coalesce_width = Truncate16(std::min<u32>(
-    si.GetUIntValue("TextureReplacements", "MaxVRAMWriteCoalesceWidth", 0u), std::numeric_limits<u16>::max()));
-  texture_replacements.config.max_vram_write_coalesce_height = Truncate16(std::min<u32>(
-    si.GetUIntValue("TextureReplacements", "MaxVRAMWriteCoalesceHeight", 0u), std::numeric_limits<u16>::max()));
+  texture_replacements.config.max_vram_write_splits =
+    si.GetSaturatedIntValue<u16>("TextureReplacements", "MaxVRAMWriteSplits", 0);
+  texture_replacements.config.max_vram_write_coalesce_width =
+    si.GetSaturatedIntValue<u16>("TextureReplacements", "MaxVRAMWriteCoalesceWidth", 0);
+  texture_replacements.config.max_vram_write_coalesce_height =
+    si.GetSaturatedIntValue<u16>("TextureReplacements", "MaxVRAMWriteCoalesceHeight", 0);
 
-  texture_replacements.config.texture_dump_width_threshold = Truncate16(std::min<u32>(
-    si.GetUIntValue("TextureReplacements", "DumpTextureWidthThreshold", 16), std::numeric_limits<u16>::max()));
-  texture_replacements.config.texture_dump_height_threshold = Truncate16(std::min<u32>(
-    si.GetUIntValue("TextureReplacements", "DumpTextureHeightThreshold", 16), std::numeric_limits<u16>::max()));
-  texture_replacements.config.vram_write_dump_width_threshold = Truncate16(std::min<u32>(
-    si.GetUIntValue("TextureReplacements", "DumpVRAMWriteWidthThreshold", 128), std::numeric_limits<u16>::max()));
-  texture_replacements.config.vram_write_dump_height_threshold = Truncate16(std::min<u32>(
-    si.GetUIntValue("TextureReplacements", "DumpVRAMWriteHeightThreshold", 128), std::numeric_limits<u16>::max()));
+  texture_replacements.config.texture_dump_width_threshold =
+    si.GetSaturatedIntValue<u16>("TextureReplacements", "DumpTextureWidthThreshold", 16);
+  texture_replacements.config.texture_dump_height_threshold =
+    si.GetSaturatedIntValue<u16>("TextureReplacements", "DumpTextureHeightThreshold", 16);
+  texture_replacements.config.vram_write_dump_width_threshold =
+    si.GetSaturatedIntValue<u16>("TextureReplacements", "DumpVRAMWriteWidthThreshold", 128);
+  texture_replacements.config.vram_write_dump_height_threshold =
+    si.GetSaturatedIntValue<u16>("TextureReplacements", "DumpVRAMWriteHeightThreshold", 128);
 
   pio_device_type = ParsePIODeviceTypeName(
-                      si.GetTinyStringValue("PIO", "DeviceType", GetPIODeviceTypeModeName(DEFAULT_PIO_DEVICE_TYPE)))
+                      si.GetStringViewValue("PIO", "DeviceType", GetPIODeviceTypeModeName(DEFAULT_PIO_DEVICE_TYPE)))
                       .value_or(DEFAULT_PIO_DEVICE_TYPE);
-  pio_flash_image_path = si.GetStringValue("PIO", "FlashImagePath");
+  pio_flash_image_path = si.GetStringViewValue("PIO", "FlashImagePath");
   pio_flash_write_enable = si.GetBoolValue("PIO", "FlashImageWriteEnable", false);
   pio_switch_active = si.GetBoolValue("PIO", "SwitchActive", true);
   sio_redirect_to_tty = si.GetBoolValue("SIO", "RedirectToTTY", false);
 
   pcdrv_enable = si.GetBoolValue("PCDrv", "Enabled", false);
   pcdrv_enable_writes = si.GetBoolValue("PCDrv", "EnableWrites", false);
-  pcdrv_root = si.GetStringValue("PCDrv", "Root");
+  pcdrv_root = si.GetStringViewValue("PCDrv", "Root");
 
 #ifdef __ANDROID__
   // Android users are incredibly silly and don't understand that stretch is in the aspect ratio list...
@@ -739,6 +776,8 @@ void Settings::Save(SettingsInterface& si, bool ignore_base) const
   if (!ignore_base)
   {
     si.SetBoolValue("Display", "ShowOSDMessages", display_show_messages);
+    si.SetBoolValue("Display", "AnimateOSDMessages", display_animate_messages);
+    si.SetBoolValue("Display", "BlurOSDMessageBackgrounds", display_blur_message_backgrounds);
     si.SetBoolValue("Display", "ShowFPS", display_show_fps);
     si.SetBoolValue("Display", "ShowSpeed", display_show_speed);
     si.SetBoolValue("Display", "ShowResolution", display_show_resolution);
@@ -753,7 +792,7 @@ void Settings::Save(SettingsInterface& si, bool ignore_base) const
     si.SetFloatValue("Display", "OSDScale", display_osd_scale);
     si.SetFloatValue("Display", "OSDMargin", display_osd_margin);
 
-    for (size_t i = 0; i < static_cast<size_t>(OSDMessageType::Persistent); i++)
+    for (size_t i = 0; i < display_osd_message_duration.size(); i++)
     {
       si.SetFloatValue(
         "Display",
@@ -838,12 +877,15 @@ void Settings::Save(SettingsInterface& si, bool ignore_base) const
   si.SetBoolValue("Cheevos", "LeaderboardTrackers", achievements_leaderboard_trackers);
   si.SetBoolValue("Cheevos", "SoundEffects", achievements_sound_effects);
   si.SetBoolValue("Cheevos", "ProgressIndicators", achievements_progress_indicators);
+  si.SetBoolValue("Cheevos", "PrefetchBadges", achievements_prefetch_badges);
   si.SetStringValue("Cheevos", "NotificationLocation", GetNotificationLocationName(achievements_notification_location));
   si.SetStringValue("Cheevos", "IndicatorLocation", GetNotificationLocationName(achievements_indicator_location));
   si.SetStringValue("Cheevos", "ChallengeIndicatorMode",
                     GetAchievementChallengeIndicatorModeName(achievements_challenge_indicator_mode));
   si.SetUIntValue("Cheevos", "NotificationsDuration", achievements_notification_duration);
   si.SetUIntValue("Cheevos", "LeaderboardsDuration", achievements_leaderboard_duration);
+  si.SetIntValue("Cheevos", "NotificationScale", achievements_notification_scale);
+  si.SetIntValue("Cheevos", "IndicatorScale", achievements_indicator_scale);
 
 #ifndef __ANDROID__
   si.SetBoolValue("Debug", "EnableGDBServer", enable_gdb_server);
@@ -1264,7 +1306,7 @@ void Settings::SetDefaultLogConfig(SettingsInterface& si)
 void Settings::UpdateLogConfig(const SettingsInterface& si)
 {
   const Log::Level log_level =
-    ParseLogLevelName(si.GetStringValue("Logging", "LogLevel", GetLogLevelName(Log::DEFAULT_LOG_LEVEL)).c_str())
+    ParseLogLevelName(si.GetStringViewValue("Logging", "LogLevel", GetLogLevelName(Log::DEFAULT_LOG_LEVEL)))
       .value_or(Log::DEFAULT_LOG_LEVEL);
   const bool log_timestamps = si.GetBoolValue("Logging", "LogTimestamps", true);
   const bool log_to_console = si.GetBoolValue("Logging", "LogToConsole", false);
@@ -1328,12 +1370,12 @@ static constexpr const std::array s_log_level_display_names = {
   TRANSLATE_DISAMBIG_NOOP("Settings", "Trace", "LogLevel"),
 };
 
-std::optional<Log::Level> Settings::ParseLogLevelName(const char* str)
+std::optional<Log::Level> Settings::ParseLogLevelName(std::string_view str)
 {
   int index = 0;
   for (const char* name : s_log_level_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<Log::Level>(index);
 
     index++;
@@ -1365,12 +1407,12 @@ static constexpr const std::array s_console_region_display_names = {
   TRANSLATE_DISAMBIG_NOOP("Settings", "PAL (Europe, Australia)", "ConsoleRegion"),
 };
 
-std::optional<ConsoleRegion> Settings::ParseConsoleRegionName(const char* str)
+std::optional<ConsoleRegion> Settings::ParseConsoleRegionName(std::string_view str)
 {
   int index = 0;
   for (const char* name : s_console_region_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<ConsoleRegion>(index);
 
     index++;
@@ -1401,12 +1443,12 @@ static constexpr const std::array s_disc_region_display_names = {
   TRANSLATE_DISAMBIG_NOOP("Settings", "Non-PS1", "DiscRegion"),
 };
 
-std::optional<DiscRegion> Settings::ParseDiscRegionName(const char* str)
+std::optional<DiscRegion> Settings::ParseDiscRegionName(std::string_view str)
 {
   int index = 0;
   for (const char* name : s_disc_region_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<DiscRegion>(index);
 
     index++;
@@ -1436,12 +1478,12 @@ static constexpr const std::array s_cpu_execution_mode_display_names = {
   TRANSLATE_DISAMBIG_NOOP("Settings", "Recompiler (Fastest)", "CPUExecutionMode"),
 };
 
-std::optional<CPUExecutionMode> Settings::ParseCPUExecutionMode(const char* str)
+std::optional<CPUExecutionMode> Settings::ParseCPUExecutionMode(std::string_view str)
 {
   u8 index = 0;
   for (const char* name : s_cpu_execution_mode_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<CPUExecutionMode>(index);
 
     index++;
@@ -1472,12 +1514,12 @@ static constexpr const std::array s_cpu_fastmem_mode_display_names = {
   TRANSLATE_DISAMBIG_NOOP("Settings", "LUT (Faster)", "CPUFastmemMode"),
 };
 
-std::optional<CPUFastmemMode> Settings::ParseCPUFastmemMode(const char* str)
+std::optional<CPUFastmemMode> Settings::ParseCPUFastmemMode(std::string_view str)
 {
   u8 index = 0;
   for (const char* name : s_cpu_fastmem_mode_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<CPUFastmemMode>(index);
 
     index++;
@@ -1531,12 +1573,12 @@ static constexpr const std::array s_gpu_renderer_display_names = {
   TRANSLATE_DISAMBIG_NOOP("Settings", "Software", "GPURenderer"),
 };
 
-std::optional<GPURenderer> Settings::ParseRendererName(const char* str)
+std::optional<GPURenderer> Settings::ParseRendererName(std::string_view str)
 {
   int index = 0;
   for (const char* name : s_gpu_renderer_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<GPURenderer>(index);
 
     index++;
@@ -1638,12 +1680,12 @@ static constexpr const std::array s_texture_filter_display_names = {
 static_assert(s_texture_filter_names.size() == static_cast<size_t>(GPUTextureFilter::Count));
 static_assert(s_texture_filter_display_names.size() == static_cast<size_t>(GPUTextureFilter::Count));
 
-std::optional<GPUTextureFilter> Settings::ParseTextureFilterName(const char* str)
+std::optional<GPUTextureFilter> Settings::ParseTextureFilterName(std::string_view str)
 {
   int index = 0;
   for (const char* name : s_texture_filter_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<GPUTextureFilter>(index);
 
     index++;
@@ -1677,12 +1719,12 @@ static constexpr const std::array s_gpu_dithering_mode_display_names = {
 static_assert(s_gpu_dithering_mode_names.size() == static_cast<size_t>(GPUDitheringMode::MaxCount));
 static_assert(s_gpu_dithering_mode_display_names.size() == static_cast<size_t>(GPUDitheringMode::MaxCount));
 
-std::optional<GPUDitheringMode> Settings::ParseGPUDitheringModeName(const char* str)
+std::optional<GPUDitheringMode> Settings::ParseGPUDitheringModeName(std::string_view str)
 {
   int index = 0;
   for (const char* name : s_gpu_dithering_mode_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<GPUDitheringMode>(index);
 
     index++;
@@ -1715,12 +1757,12 @@ static constexpr const std::array s_line_detect_mode_detect_names = {
   TRANSLATE_DISAMBIG_NOOP("Settings", "Triangles (Aggressive)", "GPULineDetectMode"),
 };
 
-std::optional<GPULineDetectMode> Settings::ParseLineDetectModeName(const char* str)
+std::optional<GPULineDetectMode> Settings::ParseLineDetectModeName(std::string_view str)
 {
   int index = 0;
   for (const char* name : s_line_detect_mode_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<GPULineDetectMode>(index);
 
     index++;
@@ -1746,12 +1788,12 @@ static constexpr const std::array s_downsample_mode_display_names = {
   TRANSLATE_DISAMBIG_NOOP("Settings", "Box (Downsample 3D/Smooth All)", "GPUDownsampleMode"),
   TRANSLATE_DISAMBIG_NOOP("Settings", "Adaptive (Preserve 3D/Smooth 2D)", "GPUDownsampleMode")};
 
-std::optional<GPUDownsampleMode> Settings::ParseDownsampleModeName(const char* str)
+std::optional<GPUDownsampleMode> Settings::ParseDownsampleModeName(std::string_view str)
 {
   int index = 0;
   for (const char* name : s_downsample_mode_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<GPUDownsampleMode>(index);
 
     index++;
@@ -1777,12 +1819,12 @@ static constexpr const std::array s_wireframe_mode_display_names = {
   TRANSLATE_DISAMBIG_NOOP("Settings", "Overlay Wireframe", "GPUWireframeMode"),
   TRANSLATE_DISAMBIG_NOOP("Settings", "Only Wireframe", "GPUWireframeMode")};
 
-std::optional<GPUWireframeMode> Settings::ParseGPUWireframeMode(const char* str)
+std::optional<GPUWireframeMode> Settings::ParseGPUWireframeMode(std::string_view str)
 {
   int index = 0;
   for (const char* name : s_wireframe_mode_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<GPUWireframeMode>(index);
 
     index++;
@@ -1817,12 +1859,12 @@ static_assert(s_gpu_dump_compression_mode_names.size() == static_cast<size_t>(GP
 static_assert(s_gpu_dump_compression_mode_display_names.size() ==
               static_cast<size_t>(GPUDumpCompressionMode::MaxCount));
 
-std::optional<GPUDumpCompressionMode> Settings::ParseGPUDumpCompressionMode(const char* str)
+std::optional<GPUDumpCompressionMode> Settings::ParseGPUDumpCompressionMode(std::string_view str)
 {
   int index = 0;
   for (const char* name : s_gpu_dump_compression_mode_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<GPUDumpCompressionMode>(index);
 
     index++;
@@ -1853,12 +1895,12 @@ static constexpr const std::array s_display_deinterlacing_mode_display_names = {
   TRANSLATE_DISAMBIG_NOOP("Settings", "Progressive (Optimal)", "DisplayDeinterlacingMode"),
 };
 
-std::optional<DisplayDeinterlacingMode> Settings::ParseDisplayDeinterlacingMode(const char* str)
+std::optional<DisplayDeinterlacingMode> Settings::ParseDisplayDeinterlacingMode(std::string_view str)
 {
   int index = 0;
   for (const char* name : s_display_deinterlacing_mode_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<DisplayDeinterlacingMode>(index);
 
     index++;
@@ -1889,12 +1931,12 @@ static constexpr const std::array s_display_crop_mode_display_names = {
   TRANSLATE_DISAMBIG_NOOP("Settings", "All Borders (Aspect Uncorrected)", "DisplayCropMode"),
 };
 
-std::optional<DisplayCropMode> Settings::ParseDisplayCropMode(const char* str)
+std::optional<DisplayCropMode> Settings::ParseDisplayCropMode(std::string_view str)
 {
   int index = 0;
   for (const char* name : s_display_crop_mode_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<DisplayCropMode>(index);
 
     index++;
@@ -1929,12 +1971,12 @@ static constexpr const std::array s_display_fine_crop_mode_display_names = {
 static_assert(s_display_fine_crop_mode_names.size() == static_cast<size_t>(DisplayFineCropMode::MaxCount));
 static_assert(s_display_fine_crop_mode_display_names.size() == static_cast<size_t>(DisplayFineCropMode::MaxCount));
 
-std::optional<DisplayFineCropMode> Settings::ParseDisplayFineCropMode(const char* str)
+std::optional<DisplayFineCropMode> Settings::ParseDisplayFineCropMode(std::string_view str)
 {
   int index = 0;
   for (const char* name : s_display_fine_crop_mode_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<DisplayFineCropMode>(index);
 
     index++;
@@ -2048,12 +2090,12 @@ static constexpr const std::array s_display_alignment_display_names = {
   TRANSLATE_DISAMBIG_NOOP("Settings", "Right / Bottom", "DisplayAlignment"),
 };
 
-std::optional<DisplayAlignment> Settings::ParseDisplayAlignment(const char* str)
+std::optional<DisplayAlignment> Settings::ParseDisplayAlignment(std::string_view str)
 {
   int index = 0;
   for (const char* name : s_display_alignment_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<DisplayAlignment>(index);
 
     index++;
@@ -2081,12 +2123,12 @@ static constexpr const std::array s_display_rotation_display_names = {
   TRANSLATE_DISAMBIG_NOOP("Settings", "Rotate 270° (Clockwise)", "DisplayRotation"),
 };
 
-std::optional<DisplayRotation> Settings::ParseDisplayRotation(const char* str)
+std::optional<DisplayRotation> Settings::ParseDisplayRotation(std::string_view str)
 {
   int index = 0;
   for (const char* name : s_display_rotation_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<DisplayRotation>(index);
 
     index++;
@@ -2118,12 +2160,12 @@ static constexpr const std::array s_display_force_video_timing_display_names = {
   TRANSLATE_DISAMBIG_NOOP("Settings", "PAL (50hz)", "ForceVideoTiming"),
 };
 
-std::optional<ForceVideoTimingMode> Settings::ParseForceVideoTimingName(const char* str)
+std::optional<ForceVideoTimingMode> Settings::ParseForceVideoTimingName(std::string_view str)
 {
   int index = 0;
   for (const char* name : s_display_force_video_timing_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<ForceVideoTimingMode>(index);
 
     index++;
@@ -2156,12 +2198,12 @@ static constexpr const std::array s_display_scaling_display_names = {
   TRANSLATE_DISAMBIG_NOOP("Settings", "Lanczos (Sharp)", "DisplayScalingMode"),
 };
 
-std::optional<DisplayScalingMode> Settings::ParseDisplayScaling(const char* str)
+std::optional<DisplayScalingMode> Settings::ParseDisplayScaling(std::string_view str)
 {
   int index = 0;
   for (const char* name : s_display_scaling_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<DisplayScalingMode>(index);
 
     index++;
@@ -2192,12 +2234,12 @@ static constexpr const std::array s_display_exclusive_fullscreen_mode_display_na
   TRANSLATE_DISAMBIG_NOOP("Settings", "Allowed", "DisplayExclusiveFullscreenControl"),
 };
 
-std::optional<DisplayExclusiveFullscreenControl> Settings::ParseDisplayExclusiveFullscreenControl(const char* str)
+std::optional<DisplayExclusiveFullscreenControl> Settings::ParseDisplayExclusiveFullscreenControl(std::string_view str)
 {
   int index = 0;
   for (const char* name : s_display_exclusive_fullscreen_mode_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<DisplayExclusiveFullscreenControl>(index);
 
     index++;
@@ -2229,12 +2271,12 @@ static constexpr const std::array s_display_screenshot_mode_display_names = {
   TRANSLATE_DISAMBIG_NOOP("Settings", "Internal Resolution (Aspect Uncorrected)", "DisplayScreenshotMode"),
 };
 
-std::optional<DisplayScreenshotMode> Settings::ParseDisplayScreenshotMode(const char* str)
+std::optional<DisplayScreenshotMode> Settings::ParseDisplayScreenshotMode(std::string_view str)
 {
   int index = 0;
   for (const char* name : s_display_screenshot_mode_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<DisplayScreenshotMode>(index);
 
     index++;
@@ -2270,12 +2312,12 @@ static constexpr const std::array s_display_screenshot_format_extensions = {
   "webp",
 };
 
-std::optional<DisplayScreenshotFormat> Settings::ParseDisplayScreenshotFormat(const char* str)
+std::optional<DisplayScreenshotFormat> Settings::ParseDisplayScreenshotFormat(std::string_view str)
 {
   int index = 0;
   for (const char* name : s_display_screenshot_format_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<DisplayScreenshotFormat>(index);
 
     index++;
@@ -2339,12 +2381,12 @@ static constexpr const std::array s_notification_location_display_names = {
 };
 static_assert(s_notification_location_display_names.size() == static_cast<size_t>(NotificationLocation::MaxCount));
 
-std::optional<NotificationLocation> Settings::ParseNotificationLocation(const char* str)
+std::optional<NotificationLocation> Settings::ParseNotificationLocation(std::string_view str)
 {
   int index = 0;
   for (const char* name : s_notification_location_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<NotificationLocation>(index);
 
     index++;
@@ -2381,12 +2423,12 @@ static constexpr const std::array s_achievement_challenge_indicator_mode_display
 static_assert(s_achievement_challenge_indicator_mode_display_names.size() ==
               static_cast<size_t>(AchievementChallengeIndicatorMode::MaxCount));
 
-std::optional<AchievementChallengeIndicatorMode> Settings::ParseAchievementChallengeIndicatorMode(const char* str)
+std::optional<AchievementChallengeIndicatorMode> Settings::ParseAchievementChallengeIndicatorMode(std::string_view str)
 {
   int index = 0;
   for (const char* name : s_achievement_challenge_indicator_mode_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<AchievementChallengeIndicatorMode>(index);
 
     index++;
@@ -2419,12 +2461,12 @@ static constexpr const std::array s_memory_card_type_display_names = {
   TRANSLATE_DISAMBIG_NOOP("Settings", "Non-Persistent Card (Do Not Save)", "MemoryCardType"),
 };
 
-std::optional<MemoryCardType> Settings::ParseMemoryCardTypeName(const char* str)
+std::optional<MemoryCardType> Settings::ParseMemoryCardTypeName(std::string_view str)
 {
   int index = 0;
   for (const char* name : s_memory_card_type_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<MemoryCardType>(index);
 
     index++;
@@ -2481,12 +2523,12 @@ static constexpr const std::array s_multitap_enable_mode_display_names = {
   TRANSLATE_DISAMBIG_NOOP("Settings", "Enable on Ports 1 and 2", "MultitapMode"),
 };
 
-std::optional<MultitapMode> Settings::ParseMultitapModeName(const char* str)
+std::optional<MultitapMode> Settings::ParseMultitapModeName(std::string_view str)
 {
   u32 index = 0;
   for (const char* name : s_multitap_enable_mode_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<MultitapMode>(index);
 
     index++;
@@ -2513,12 +2555,12 @@ static constexpr const std::array s_mechacon_version_display_names = {
   "96/08/15 (VC2)",  "96/08/18 (VC1)",  "96/09/12 (VC2J)", "97/01/10 (VC2A)", "97/08/14 (VC2B)",
   "98/06/10 (VC3A)", "99/02/01 (VC3B)", "01/03/06 (VC3C)"};
 
-std::optional<CDROMMechaconVersion> Settings::ParseCDROMMechVersionName(const char* str)
+std::optional<CDROMMechaconVersion> Settings::ParseCDROMMechVersionName(std::string_view str)
 {
   u32 index = 0;
   for (const char* name : s_mechacon_version_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<CDROMMechaconVersion>(index);
 
     index++;
@@ -2557,12 +2599,12 @@ static_assert(s_save_state_compression_mode_names.size() == static_cast<size_t>(
 static_assert(s_save_state_compression_mode_display_names.size() ==
               static_cast<size_t>(SaveStateCompressionMode::Count));
 
-std::optional<SaveStateCompressionMode> Settings::ParseSaveStateCompressionModeName(const char* str)
+std::optional<SaveStateCompressionMode> Settings::ParseSaveStateCompressionModeName(std::string_view str)
 {
   u32 index = 0;
   for (const char* name : s_save_state_compression_mode_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<SaveStateCompressionMode>(index);
 
     index++;
@@ -2593,12 +2635,12 @@ static constexpr const std::array s_pio_device_type_display_names = {
 static_assert(s_pio_device_type_names.size() == static_cast<size_t>(PIODeviceType::MaxCount));
 static_assert(s_pio_device_type_display_names.size() == static_cast<size_t>(PIODeviceType::MaxCount));
 
-std::optional<PIODeviceType> Settings::ParsePIODeviceTypeName(const char* str)
+std::optional<PIODeviceType> Settings::ParsePIODeviceTypeName(std::string_view str)
 {
   u32 index = 0;
   for (const char* name : s_pio_device_type_names)
   {
-    if (StringUtil::Strcasecmp(name, str) == 0)
+    if (str == name)
       return static_cast<PIODeviceType>(index);
 
     index++;

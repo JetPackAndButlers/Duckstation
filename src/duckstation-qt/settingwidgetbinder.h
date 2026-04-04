@@ -741,7 +741,7 @@ inline void BindWidgetToBoolSetting(SettingsInterface* sif, WidgetType* widget, 
     Accessor::makeNullableBool(widget, value);
 
     bool sif_value;
-    if (sif->GetBoolValue(section.c_str(), key.c_str(), &sif_value))
+    if (sif->FindBoolValue(section.c_str(), key.c_str(), &sif_value))
       Accessor::setNullableBoolValue(widget, sif_value);
     else
       Accessor::setNullableBoolValue(widget, std::nullopt);
@@ -783,7 +783,7 @@ inline void BindWidgetToIntSetting(SettingsInterface* sif, WidgetType* widget, s
     Accessor::makeNullableInt(widget, value);
 
     int sif_value;
-    if (sif->GetIntValue(section.c_str(), key.c_str(), &sif_value))
+    if (sif->FindIntValue(section.c_str(), key.c_str(), &sif_value))
       Accessor::setNullableIntValue(widget, sif_value - option_offset);
     else
       Accessor::setNullableIntValue(widget, std::nullopt);
@@ -836,7 +836,7 @@ inline void BindWidgetToIntSetting(SettingsInterface* sif, WidgetType* widget, s
     Accessor::makeNullableInt(widget, value_to_index(value, values));
 
     int sif_value;
-    if (sif->GetIntValue(section.c_str(), key.c_str(), &sif_value))
+    if (sif->FindIntValue(section.c_str(), key.c_str(), &sif_value))
       Accessor::setNullableIntValue(widget, value_to_index(sif_value, values));
     else
       Accessor::setNullableIntValue(widget, std::nullopt);
@@ -883,7 +883,7 @@ inline void BindWidgetAndLabelToIntSetting(SettingsInterface* sif, WidgetType* w
     Accessor::makeNullableInt(widget, global_value);
 
     int sif_value;
-    if (sif->GetIntValue(section.c_str(), key.c_str(), &sif_value))
+    if (sif->FindIntValue(section.c_str(), key.c_str(), &sif_value))
     {
       Accessor::setNullableIntValue(widget, sif_value - option_offset);
       if (label)
@@ -958,7 +958,7 @@ inline void BindWidgetToFloatSetting(SettingsInterface* sif, WidgetType* widget,
     Accessor::makeNullableFloat(widget, value);
 
     float sif_value;
-    if (sif->GetFloatValue(section.c_str(), key.c_str(), &sif_value))
+    if (sif->FindFloatValue(section.c_str(), key.c_str(), &sif_value))
       Accessor::setNullableFloatValue(widget, sif_value);
     else
       Accessor::setNullableFloatValue(widget, std::nullopt);
@@ -999,7 +999,7 @@ inline void BindWidgetToNormalizedSetting(SettingsInterface* sif, WidgetType* wi
     Accessor::makeNullableInt(widget, static_cast<int>(value * range));
 
     float sif_value;
-    if (sif->GetFloatValue(section.c_str(), key.c_str(), &sif_value))
+    if (sif->FindFloatValue(section.c_str(), key.c_str(), &sif_value))
       Accessor::setNullableIntValue(widget, static_cast<int>(sif_value * range));
     else
       Accessor::setNullableIntValue(widget, std::nullopt);
@@ -1040,9 +1040,9 @@ inline void BindWidgetToStringSetting(SettingsInterface* sif, WidgetType* widget
   {
     Accessor::makeNullableString(widget, value);
 
-    std::string sif_value;
-    if (sif->GetStringValue(section.c_str(), key.c_str(), &sif_value))
-      Accessor::setNullableStringValue(widget, QString::fromStdString(sif_value));
+    std::string_view sif_value;
+    if (sif->FindStringValue(section.c_str(), key.c_str(), &sif_value))
+      Accessor::setNullableStringValue(widget, QtUtils::StringViewToQString(sif_value));
     else
       Accessor::setNullableStringValue(widget, std::nullopt);
 
@@ -1071,7 +1071,7 @@ inline void BindWidgetToStringSetting(SettingsInterface* sif, WidgetType* widget
 
 template<typename WidgetType, typename DataType>
 inline void BindWidgetToEnumSetting(SettingsInterface* sif, WidgetType* widget, std::string section, std::string key,
-                                    std::optional<DataType> (*from_string_function)(const char* str),
+                                    std::optional<DataType> (*from_string_function)(std::string_view str),
                                     const char* (*to_string_function)(DataType value), DataType default_value)
 {
   using Accessor = SettingAccessor<WidgetType>;
@@ -1086,10 +1086,10 @@ inline void BindWidgetToEnumSetting(SettingsInterface* sif, WidgetType* widget, 
     Accessor::makeNullableInt(
       widget, typed_value.has_value() ? static_cast<int>(static_cast<UnderlyingType>(typed_value.value())) : 0);
 
-    std::string sif_value;
-    if (sif->GetStringValue(section.c_str(), key.c_str(), &sif_value))
+    std::string_view sif_value;
+    if (sif->FindStringValue(section.c_str(), key.c_str(), &sif_value))
     {
-      const std::optional<DataType> old_setting_value = from_string_function(sif_value.c_str());
+      const std::optional<DataType> old_setting_value = from_string_function(sif_value);
       if (old_setting_value.has_value())
         Accessor::setNullableIntValue(widget, static_cast<int>(static_cast<UnderlyingType>(old_setting_value.value())));
       else
@@ -1137,7 +1137,7 @@ inline void BindWidgetToEnumSetting(SettingsInterface* sif, WidgetType* widget, 
 
 template<typename WidgetType, typename DataType, typename ValueCountType>
 inline void BindWidgetToEnumSetting(SettingsInterface* sif, WidgetType* widget, std::string section, std::string key,
-                                    std::optional<DataType> (*from_string_function)(const char* str),
+                                    std::optional<DataType> (*from_string_function)(std::string_view str),
                                     const char* (*to_string_function)(DataType value),
                                     const char* (*to_display_name_function)(DataType value), DataType default_value,
                                     ValueCountType value_count, QIcon (*item_icon_function)(DataType value) = nullptr)
@@ -1168,10 +1168,10 @@ inline void BindWidgetToEnumSetting(SettingsInterface* sif, WidgetType* widget, 
     Accessor::makeNullableInt(
       widget, typed_value.has_value() ? static_cast<int>(static_cast<UnderlyingType>(typed_value.value())) : 0);
 
-    std::string sif_value;
-    if (sif->GetStringValue(section.c_str(), key.c_str(), &sif_value))
+    std::string_view sif_value;
+    if (sif->FindStringValue(section.c_str(), key.c_str(), &sif_value))
     {
-      const std::optional<DataType> old_setting_value = from_string_function(sif_value.c_str());
+      const std::optional<DataType> old_setting_value = from_string_function(sif_value);
       if (old_setting_value.has_value())
         Accessor::setNullableIntValue(widget, static_cast<int>(static_cast<UnderlyingType>(old_setting_value.value())));
       else
@@ -1219,7 +1219,7 @@ inline void BindWidgetToEnumSetting(SettingsInterface* sif, WidgetType* widget, 
 
 template<typename DataType, typename ValueCountType>
 inline void BindMenuToEnumSetting(QMenu* menu, std::string section, std::string key,
-                                  std::optional<DataType> (*from_string_function)(const char* str),
+                                  std::optional<DataType> (*from_string_function)(std::string_view str),
                                   const char* (*to_string_function)(DataType value),
                                   const char* (*to_display_name_function)(DataType value), DataType default_value,
                                   ValueCountType value_count)
@@ -1227,7 +1227,7 @@ inline void BindMenuToEnumSetting(QMenu* menu, std::string section, std::string 
   QActionGroup* group = new QActionGroup(menu);
 
   const std::optional<DataType> typed_value = from_string_function(
-    Core::GetBaseSmallStringSettingValue(section.c_str(), key.c_str(), to_string_function(default_value)).c_str());
+    Core::GetBaseSmallStringSettingValue(section.c_str(), key.c_str(), to_string_function(default_value)));
 
   // need a shared pointer, otherwise we dupe it a ton...
   struct CallbackData
@@ -1248,138 +1248,6 @@ inline void BindMenuToEnumSetting(QMenu* menu, std::string section, std::string 
     QObject::connect(action, &QAction::triggered, menu, [data, to_string_function, i]() {
       Core::SetBaseStringSettingValue(data->section.c_str(), data->key.c_str(),
                                       to_string_function(static_cast<DataType>(i)));
-      Host::CommitBaseSettingChanges();
-      g_core_thread->applySettings();
-    });
-  }
-}
-
-template<typename WidgetType, typename DataType>
-inline void BindWidgetToEnumSetting(SettingsInterface* sif, WidgetType* widget, std::string section, std::string key,
-                                    const char** enum_names, DataType default_value)
-{
-  using Accessor = SettingAccessor<WidgetType>;
-  using UnderlyingType = std::underlying_type_t<DataType>;
-
-  const std::string value(Core::GetBaseStringSettingValue(section.c_str(), key.c_str(),
-                                                          enum_names[static_cast<UnderlyingType>(default_value)]));
-
-  UnderlyingType enum_index = static_cast<UnderlyingType>(default_value);
-  for (UnderlyingType i = 0; enum_names[i] != nullptr; i++)
-  {
-    if (value == enum_names[i])
-    {
-      enum_index = i;
-      break;
-    }
-  }
-
-  if (sif)
-  {
-    Accessor::makeNullableInt(widget, static_cast<int>(enum_index));
-
-    std::string sif_value;
-    std::optional<int> sif_int_value;
-    if (sif->GetStringValue(section.c_str(), key.c_str(), &sif_value))
-    {
-      for (UnderlyingType i = 0; enum_names[i] != nullptr; i++)
-      {
-        if (sif_value == enum_names[i])
-        {
-          sif_int_value = static_cast<int>(i);
-          break;
-        }
-      }
-    }
-    Accessor::setNullableIntValue(widget, sif_int_value);
-
-    Accessor::connectValueChanged(
-      widget, [sif, widget, section = std::move(section), key = std::move(key), enum_names]() {
-        if (std::optional<int> new_value = Accessor::getNullableIntValue(widget); new_value.has_value())
-          sif->SetStringValue(section.c_str(), key.c_str(), enum_names[new_value.value()]);
-        else
-          sif->DeleteValue(section.c_str(), key.c_str());
-
-        QtHost::SaveGameSettings(sif, true);
-        g_core_thread->reloadGameSettings();
-      });
-  }
-  else
-  {
-    Accessor::setIntValue(widget, static_cast<int>(enum_index));
-
-    Accessor::connectValueChanged(widget, [widget, section = std::move(section), key = std::move(key), enum_names]() {
-      const UnderlyingType value = static_cast<UnderlyingType>(Accessor::getIntValue(widget));
-      Core::SetBaseStringSettingValue(section.c_str(), key.c_str(), enum_names[value]);
-      Host::CommitBaseSettingChanges();
-      g_core_thread->applySettings();
-    });
-  }
-}
-
-template<typename WidgetType>
-inline void BindWidgetToEnumSetting(SettingsInterface* sif, WidgetType* widget, std::string section, std::string key,
-                                    const char** enum_names, const char** enum_values, const char* default_value,
-                                    const char* translation_ctx = nullptr)
-{
-  using Accessor = SettingAccessor<WidgetType>;
-
-  const std::string value = Core::GetBaseStringSettingValue(section.c_str(), key.c_str(), default_value);
-
-  for (int i = 0; enum_names[i] != nullptr; i++)
-  {
-    widget->addItem(translation_ctx ? qApp->translate(translation_ctx, enum_names[i]) :
-                                      QString::fromUtf8(enum_names[i]));
-  }
-
-  int enum_index = -1;
-  for (int i = 0; enum_values[i] != nullptr; i++)
-  {
-    if (value == enum_values[i])
-    {
-      enum_index = i;
-      break;
-    }
-  }
-
-  if (sif)
-  {
-    Accessor::makeNullableInt(widget, enum_index);
-
-    std::string sif_value;
-    std::optional<int> sif_int_value;
-    if (sif->GetStringValue(section.c_str(), key.c_str(), &sif_value))
-    {
-      for (int i = 0; enum_values[i] != nullptr; i++)
-      {
-        if (sif_value == enum_values[i])
-        {
-          sif_int_value = i;
-          break;
-        }
-      }
-    }
-    Accessor::setNullableIntValue(widget, sif_int_value);
-
-    Accessor::connectValueChanged(
-      widget, [sif, widget, section = std::move(section), key = std::move(key), enum_values]() {
-        if (std::optional<int> new_value = Accessor::getNullableIntValue(widget); new_value.has_value())
-          sif->SetStringValue(section.c_str(), key.c_str(), enum_values[new_value.value()]);
-        else
-          sif->DeleteValue(section.c_str(), key.c_str());
-
-        QtHost::SaveGameSettings(sif, true);
-        g_core_thread->reloadGameSettings();
-      });
-  }
-  else
-  {
-    if (enum_index >= 0)
-      Accessor::setIntValue(widget, enum_index);
-
-    Accessor::connectValueChanged(widget, [widget, section = std::move(section), key = std::move(key), enum_values]() {
-      const int value = Accessor::getIntValue(widget);
-      Core::SetBaseStringSettingValue(section.c_str(), key.c_str(), enum_values[value]);
       Host::CommitBaseSettingChanges();
       g_core_thread->applySettings();
     });

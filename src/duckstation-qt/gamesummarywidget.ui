@@ -108,13 +108,85 @@
     </widget>
    </item>
    <item row="4" column="0">
+    <widget class="QLabel" name="label_3">
+     <property name="text">
+      <string>Region:</string>
+     </property>
+    </widget>
+   </item>
+   <item row="4" column="1">
+    <widget class="QComboBox" name="region">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
+       <horstretch>0</horstretch>
+       <verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+    </widget>
+   </item>
+   <item row="4" column="2">
+    <widget class="QPushButton" name="restoreRegion">
+     <property name="enabled">
+      <bool>false</bool>
+     </property>
+     <property name="toolTip">
+      <string>Restore Region</string>
+     </property>
+     <property name="icon">
+      <iconset theme="restart-line"/>
+     </property>
+    </widget>
+   </item>
+   <item row="5" column="0">
+    <widget class="QLabel" name="label_5">
+     <property name="text">
+      <string>Languages:</string>
+     </property>
+    </widget>
+   </item>
+   <item row="5" column="1" colspan="2">
+    <layout class="QHBoxLayout" name="horizontalLayout_3" stretch="1,0">
+     <item>
+      <widget class="QLineEdit" name="languages">
+       <property name="readOnly">
+        <bool>true</bool>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QComboBox" name="customLanguage"/>
+     </item>
+    </layout>
+   </item>
+   <item row="6" column="0">
+    <widget class="QLabel" name="label_7">
+     <property name="text">
+      <string>Compatibility:</string>
+     </property>
+    </widget>
+   </item>
+   <item row="6" column="1">
+    <widget class="QComboBox" name="compatibility">
+     <property name="enabled">
+      <bool>false</bool>
+     </property>
+    </widget>
+   </item>
+   <item row="6" column="2">
+    <widget class="QPushButton" name="compatibilityComments">
+     <property name="icon">
+      <iconset theme="information-line"/>
+     </property>
+    </widget>
+   </item>
+   <item row="7" column="0">
     <widget class="QLabel" name="label_10">
      <property name="text">
       <string>Type:</string>
      </property>
     </widget>
    </item>
-   <item row="4" column="1" colspan="2">
+   <item row="7" column="1" colspan="2">
     <layout class="QHBoxLayout" name="horizontalLayout_4" stretch="1,0">
      <item>
       <widget class="QComboBox" name="entryType">
@@ -135,101 +207,29 @@
      </item>
     </layout>
    </item>
-   <item row="5" column="0">
-    <widget class="QLabel" name="label_3">
-     <property name="text">
-      <string>Region:</string>
-     </property>
-    </widget>
-   </item>
-   <item row="5" column="1">
-    <widget class="QComboBox" name="region">
-     <property name="sizePolicy">
-      <sizepolicy hsizetype="Expanding" vsizetype="Fixed">
-       <horstretch>0</horstretch>
-       <verstretch>0</verstretch>
-      </sizepolicy>
-     </property>
-    </widget>
-   </item>
-   <item row="5" column="2">
-    <widget class="QPushButton" name="restoreRegion">
-     <property name="enabled">
-      <bool>false</bool>
-     </property>
-     <property name="toolTip">
-      <string>Restore Region</string>
-     </property>
-     <property name="icon">
-      <iconset theme="restart-line"/>
-     </property>
-    </widget>
-   </item>
-   <item row="6" column="0">
-    <widget class="QLabel" name="label_5">
-     <property name="text">
-      <string>Languages:</string>
-     </property>
-    </widget>
-   </item>
-   <item row="6" column="1" colspan="2">
-    <layout class="QHBoxLayout" name="horizontalLayout_3" stretch="1,0">
-     <item>
-      <widget class="QLineEdit" name="languages">
-       <property name="readOnly">
-        <bool>true</bool>
-       </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="QComboBox" name="customLanguage"/>
-     </item>
-    </layout>
-   </item>
-   <item row="7" column="0">
-    <widget class="QLabel" name="label_7">
-     <property name="text">
-      <string>Compatibility:</string>
-     </property>
-    </widget>
-   </item>
-   <item row="7" column="1">
-    <widget class="QComboBox" name="compatibility">
-     <property name="enabled">
-      <bool>false</bool>
-     </property>
-    </widget>
-   </item>
-   <item row="7" column="2">
-    <widget class="QPushButton" name="compatibilityComments">
-     <property name="icon">
-      <iconset theme="information-line"/>
-     </property>
-    </widget>
-   </item>
    <item row="8" column="0">
-    <widget class="QLabel" name="label_11">
+    <widget class="QLabel" name="hashesLabel">
      <property name="text">
-      <string>Genre:</string>
+      <string>Hashes:</string>
      </property>
     </widget>
    </item>
    <item row="8" column="1" colspan="2">
-    <widget class="QLineEdit" name="genre">
+    <widget class="QLineEdit" name="hashes">
      <property name="readOnly">
       <bool>true</bool>
      </property>
     </widget>
    </item>
    <item row="9" column="0">
-    <widget class="QLabel" name="label_12">
+    <widget class="QLabel" name="label_11">
      <property name="text">
-      <string>Developer:</string>
+      <string>Metadata:</string>
      </property>
     </widget>
    </item>
    <item row="9" column="1" colspan="2">
-    <widget class="QLineEdit" name="developer">
+    <widget class="QLineEdit" name="metadata">
      <property name="readOnly">
       <bool>true</bool>
      </property>

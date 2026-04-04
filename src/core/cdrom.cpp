@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "cdrom.h"
@@ -21,13 +21,16 @@
 #include "util/translation.h"
 
 #include "common/align.h"
+#include "common/bcdutils.h"
 #include "common/bitfield.h"
+#include "common/bitutils.h"
 #include "common/error.h"
 #include "common/fifo_queue.h"
 #include "common/file_system.h"
 #include "common/gsvector.h"
 #include "common/heap_array.h"
 #include "common/log.h"
+#include "common/path.h"
 #include "common/xorshift_prng.h"
 
 #include "IconsEmoji.h"
@@ -1021,7 +1024,7 @@ bool CDROM::PrecacheMedia()
     Host::AddOSDMessage(
       OSDMessageType::Error,
       fmt::format(TRANSLATE_FS("OSDMessage", "CD image preloading not available for multi-disc image '{}'"),
-                  FileSystem::GetDisplayNameFromPath(s_reader.GetMedia()->GetPath())));
+                  Path::GetFileName(s_reader.GetMedia()->GetPath())));
     return false;
   }
 
@@ -2262,6 +2265,10 @@ void CDROM::ExecuteCommand(void*, TickCount ticks, TickCount ticks_late)
       {
         SendErrorResponse(STAT_ERROR, ERROR_REASON_INCORRECT_NUMBER_OF_PARAMETERS);
       }
+      else if (!CanReadMedia())
+      {
+        SendErrorResponse(STAT_ERROR, ERROR_REASON_NOT_READY);
+      }
       else
       {
         SendACKAndStat();
@@ -2273,8 +2280,9 @@ void CDROM::ExecuteCommand(void*, TickCount ticks, TickCount ticks_late)
           return;
         }
 
-        if (CanReadMedia())
-          StartMotor();
+        // ensure bit is set, Armored Core - Master of Arena relies on it
+        s_state.secondary_status.motor_on = true;
+        StartMotor();
 
         QueueCommandSecondResponse(Command::MotorOn, MOTOR_ON_RESPONSE_TICKS);
       }

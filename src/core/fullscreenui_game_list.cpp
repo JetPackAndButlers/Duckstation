@@ -67,8 +67,8 @@ ALIGN_TO_CACHE_LINE static GameListLocals s_game_list_locals;
 
 FullscreenUI::FileSelectorFilters FullscreenUI::GetDiscImageFilters()
 {
-  return {"*.bin",   "*.cue",    "*.iso", "*.img", "*.chd", "*.ecm",     "*.mds", "*.cpe", "*.elf",
-          "*.psexe", "*.ps-exe", "*.exe", "*.psx", "*.psf", "*.minipsf", "*.m3u", "*.pbp"};
+  return {"*.bin", "*.cue", "*.iso",   "*.img",    "*.chd", "*.ecm", "*.mds", "*.pbp",     "*.ccd",
+          "*.cpe", "*.elf", "*.psexe", "*.ps-exe", "*.exe", "*.psx", "*.psf", "*.minipsf", "*.m3u"};
 }
 
 FullscreenUI::FileSelectorFilters FullscreenUI::GetImageFilters()
@@ -459,8 +459,8 @@ void FullscreenUI::DrawGameList(const ImVec2& heading_size)
           selected_entry = entry;
 
         if (selected_entry &&
-            (ImGui::IsItemClicked(ImGuiMouseButton_Right) || ImGui::IsKeyPressed(ImGuiKey_NavGamepadInput, false) ||
-             ImGui::IsKeyPressed(ImGuiKey_F1, false)))
+            (ImGui::IsItemClicked(ImGuiMouseButton_Right) ||
+             ImGui::IsKeyPressed(ImGuiKey_NavGamepadContextMenu, false) || ImGui::IsKeyPressed(ImGuiKey_F1, false)))
         {
           CancelPendingMenuClose();
           HandleGameListOptions(selected_entry);
@@ -854,8 +854,8 @@ void FullscreenUI::DrawGameGrid(const ImVec2& heading_size)
         HandleGameListActivate(entry);
       }
       else if (hovered &&
-               (ImGui::IsItemClicked(ImGuiMouseButton_Right) || ImGui::IsKeyPressed(ImGuiKey_NavGamepadInput, false) ||
-                ImGui::IsKeyPressed(ImGuiKey_F1, false)))
+               (ImGui::IsItemClicked(ImGuiMouseButton_Right) ||
+                ImGui::IsKeyPressed(ImGuiKey_NavGamepadContextMenu, false) || ImGui::IsKeyPressed(ImGuiKey_F1, false)))
       {
         CancelPendingMenuClose();
         HandleGameListOptions(entry);

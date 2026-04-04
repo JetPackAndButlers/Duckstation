@@ -28,9 +28,12 @@
 
 class Error;
 class Image;
+class ProgressCallbackWithPrompt;
+
+enum class GPUPresentResult : u8;
+class GPUPipeline;
 class GPUTexture;
 class GPUSwapChain;
-class ProgressCallbackWithPrompt;
 
 enum class OSDMessageType : u8;
 
@@ -72,6 +75,7 @@ inline constexpr float LAYOUT_SMALL_POPUP_PADDING = 20.0f;
 inline constexpr float LAYOUT_LARGE_POPUP_PADDING = 30.0f;
 inline constexpr float LAYOUT_LARGE_POPUP_ROUNDING = 40.0f;
 inline constexpr float LAYOUT_WIDGET_FRAME_ROUNDING = 20.0f;
+inline constexpr float LAYOUT_FRAME_BORDER_SIZE = 1.0f;
 inline constexpr ImVec2 LAYOUT_CENTER_ALIGN_TEXT = ImVec2(0.5f, 0.0f);
 
 struct ALIGN_TO_CACHE_LINE UIStyles
@@ -82,6 +86,7 @@ struct ALIGN_TO_CACHE_LINE UIStyles
   ImVec4 BackgroundHighlight;
   ImVec4 PopupBackgroundColor;
   ImVec4 PopupFrameBackgroundColor;
+  ImVec4 PopupHighlight;
   ImVec4 DisabledColor;
   ImVec4 PrimaryColor;
   ImVec4 PrimaryLightColor;
@@ -108,14 +113,18 @@ struct ALIGN_TO_CACHE_LINE UIStyles
   float MediumFontSize;
   float MediumLargeFontSize;
   float MediumSmallFontSize;
+  float BlurBackgroundWeight;
 
   static constexpr float NormalFontWeight = 0.0f;
   static constexpr float BoldFontWeight = 500.0f;
 
-  bool Animations;
-  bool SmoothScrolling;
-  bool MenuBorders;
-  bool IsDarkTheme;
+  bool Animations : 1;
+  bool SmoothScrolling : 1;
+  bool MenuBorders : 1;
+  bool BlurMenuBackground : 1;
+  bool SoundEffects : 1;
+  bool IsDarkTheme : 1;
+  bool UsingPSIcons : 1;
 };
 
 extern UIStyles UIStyle;
@@ -189,6 +198,13 @@ ALWAYS_INLINE std::string_view RemoveHash(std::string_view s)
   return (pos != std::string_view::npos) ? s.substr(0, pos) : s;
 }
 
+#if 0
+ALWAYS_INLINE ImVec2 ApplyPivot(const ImVec2& pos, const ImVec2& size, const ImVec2& pivot)
+{
+  return ImVec2(pos.x - size.x * pivot.x, pos.y - size.y * pivot.y);
+}
+#endif
+
 /// Localization support.
 #define FSUI_TR_CONTEXT std::string_view("FullscreenUI")
 
@@ -229,6 +245,7 @@ void UpdateWidgetsSettings();
 
 bool CreateWidgetsGPUResources(Error* error);
 void DestroyWidgetsGPUResources();
+GPUPipeline* GetPresentCopyPipeline();
 
 std::span<const char* const> GetThemeNames();
 std::span<const char* const> GetThemeDisplayNames();
@@ -269,9 +286,17 @@ void BeginTransition(float time, TransitionStartCallback func);
 void CancelTransition();
 bool IsTransitionActive();
 TransitionState GetTransitionState();
-GPUTexture* GetTransitionRenderTexture(GPUSwapChain* swap_chain);
-void RenderTransitionBlend(GPUSwapChain* swap_chain);
+GPUTexture* GetTransitionRenderTexture(GPUSwapChain* const swap_chain);
+void RenderTransitionBlend(GPUSwapChain* const swap_chain, GPUTexture* const transition_texture);
 void UpdateTransitionState();
+
+/// Screen blurring.
+bool CanBlurBackground();
+void InvalidateBlurBackground();
+GPUTexture* GetBlurRenderTexture();
+void RenderBlur(GPUTexture* const blur_render_texture);
+bool BeginBlurBackground(ImDrawList* const dl, const ImVec2& bb_min, const ImVec2& bb_max);
+void EndBlurBackground(ImDrawList* const dl);
 
 /// Layout helpers.
 void BeginLayout();
@@ -309,7 +334,7 @@ enum class FocusResetType : u8
 };
 void QueueResetFocus(FocusResetType type);
 void CancelResetFocus();
-bool ResetFocusHere();
+void ResetFocusHere();
 bool IsFocusResetQueued();
 bool IsFocusResetFromWindowChange();
 FocusResetType GetQueuedFocusResetType();
@@ -341,15 +366,17 @@ bool BeginFullscreenWindow(float left, float top, float width, float height, con
                            const ImVec2& padding = ImVec2(), ImGuiWindowFlags flags = 0);
 bool BeginFullscreenWindow(const ImVec2& position, const ImVec2& size, const char* name,
                            const ImVec4& background = HEX_TO_IMVEC4(0x212121, 0xFF), float rounding = 0.0f,
-                           const ImVec2& padding = ImVec2(), ImGuiWindowFlags flags = 0);
+                           const ImVec2& padding = ImVec2(), ImGuiWindowFlags flags = 0, bool blur = false);
 void EndFullscreenWindow(bool allow_wrap_x = false, bool allow_wrap_y = true);
 void SetWindowNavWrapping(bool allow_wrap_x = false, bool allow_wrap_y = true);
+bool BeginBlurWindow(const char* name, bool* p_open = nullptr, ImGuiWindowFlags flags = 0, bool blur = true);
 
 bool IsGamepadInputSource();
 std::string_view GetControllerIconMapping(std::string_view icon);
 void SetFullscreenFooterText(std::string_view text);
 void SetFullscreenFooterText(std::span<const std::pair<const char*, std::string_view>> items);
 void SetStandardSelectionFooterText(bool back_instead_of_cancel);
+void SetFullscreenFooterBlur(bool allowed);
 void SetFullscreenStatusText(std::string_view text);
 void SetFullscreenStatusText(std::span<const std::pair<const char*, std::string_view>> items);
 void DrawFullscreenFooter();
@@ -381,6 +408,8 @@ void RenderMultiLineShadowedTextClipped(ImDrawList* draw_list, ImFont* font, flo
                                         const ImVec2& pos_min, const ImVec2& pos_max, u32 color, std::string_view text,
                                         const ImVec2& align, float wrap_width, const ImRect* clip_rect = nullptr,
                                         float shadow_offset = LayoutScale(LAYOUT_SHADOW_OFFSET));
+ImVec2 RenderOutlinedText(ImDrawList* draw_list, ImFont* font, float size, float weight, const ImVec2& pos, ImU32 col,
+                          std::string_view text);
 void RenderAutoLabelText(ImDrawList* draw_list, ImFont* font, float font_size, float font_weight, float label_weight,
                          const ImVec2& pos_min, const ImVec2& pos_max, u32 color, std::string_view text,
                          char separator = ':', float shadow_offset = LayoutScale(LAYOUT_SHADOW_OFFSET));

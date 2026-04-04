@@ -3,6 +3,8 @@ add_executable(util-tests
   elf_parser_tests.cpp
   cue_parser_tests.cpp
   image_tests.cpp
+  ini_settings_interface_tests.cpp
+  stub_host.cpp
 )
 
 target_include_directories(util-tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")

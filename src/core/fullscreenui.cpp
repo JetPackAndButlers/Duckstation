@@ -53,6 +53,7 @@ static void DrawExitWindow();
 static void DrawPauseMenu();
 static void DrawAboutWindow();
 static void FixStateIfPaused();
+static void UnpauseForMenuClose();
 
 //////////////////////////////////////////////////////////////////////////
 // Backgrounds
@@ -62,7 +63,8 @@ static bool HasBackground();
 static bool LoadBackgroundShader(const std::string& path, Error* error);
 static bool LoadBackgroundImage(const std::string& path, Error* error);
 static void DrawBackground();
-static void DrawShaderBackgroundCallback(const ImDrawList* parent_list, const ImDrawCmd* cmd);
+static void DrawShaderBackgroundCallback(const ImDrawList* parent_list, const ImDrawCmd* cmd, u32 base_vertex,
+                                         u32 base_index);
 
 //////////////////////////////////////////////////////////////////////////
 // Resources
@@ -84,7 +86,7 @@ static void DoToggleFastForward();
 static void ConfirmWithSafetyCheck(std::string action, bool check_achievements, std::function<void(bool)> callback);
 static void RequestShutdown(bool save_state);
 static void RequestRestart();
-static void BeginChangeDiscOnCoreThread(bool needs_pause);
+static void BeginChangeDiscOnCoreThread(bool was_paused, bool needs_pause);
 static void StartChangeDiscFromFile();
 static void DoRequestExit();
 static void DoDesktopMode();
@@ -109,7 +111,8 @@ struct SaveStateListEntry
 static void InitializePlaceholderSaveStateListEntry(SaveStateListEntry* li, s32 slot, bool global);
 static bool InitializeSaveStateListEntryFromSerial(SaveStateListEntry* li, const std::string& serial, s32 slot,
                                                    bool global);
-static bool InitializeSaveStateListEntryFromPath(SaveStateListEntry* li, std::string path, s32 slot, bool global);
+static bool InitializeSaveStateListEntryFromPath(SaveStateListEntry* li, std::string path, s32 slot, bool global,
+                                                 Error* error, bool* exists);
 static void ClearSaveStateEntryList();
 static u32 PopulateSaveStateListEntries(const std::string& serial, std::optional<ExtendedSaveStateInfo> undo_save_state,
                                         bool is_loading);
@@ -143,6 +146,7 @@ struct Locals
   bool background_loaded = false;
   bool pause_menu_was_open = false;
   bool was_paused_on_quick_menu_open = false;
+  bool has_pending_window_switch = false;
 
   // Background
   std::unique_ptr<GPUTexture> app_background_texture;
@@ -287,12 +291,9 @@ void FullscreenUI::OnSystemDestroyed()
   });
 }
 
-void FullscreenUI::PauseForMenuOpen(bool set_pause_menu_open)
+void FullscreenUI::PauseForMenuOpen(bool was_paused, bool set_pause_menu_open)
 {
-  s_locals.was_paused_on_quick_menu_open = VideoThread::IsSystemPaused();
-  if (!s_locals.was_paused_on_quick_menu_open)
-    Host::RunOnCoreThread([]() { System::PauseSystem(true); });
-
+  s_locals.was_paused_on_quick_menu_open = was_paused;
   s_locals.pause_menu_was_open |= set_pause_menu_open;
 }
 
@@ -301,12 +302,14 @@ void FullscreenUI::OpenPauseMenu()
   if (!System::IsValid())
     return;
 
-  VideoThread::RunOnThread([]() {
+  const bool was_paused = System::IsPaused();
+
+  VideoThread::RunOnThread([was_paused]() {
     Initialize();
     if (s_locals.current_main_window != MainWindowType::None)
       return;
 
-    PauseForMenuOpen(true);
+    PauseForMenuOpen(was_paused, true);
     ForceKeyNavEnabled();
     EnqueueSoundEffect(SFX_NAV_ACTIVATE);
 
@@ -316,6 +319,10 @@ void FullscreenUI::OpenPauseMenu()
       SwitchToMainWindow(MainWindowType::PauseMenu);
     });
   });
+
+  // NOTE: Down here to avoid flickering pause icon.
+  if (!was_paused)
+    System::PauseSystem(true);
 }
 
 void FullscreenUI::OpenCheatsMenu()
@@ -323,12 +330,14 @@ void FullscreenUI::OpenCheatsMenu()
   if (!System::IsValid())
     return;
 
-  VideoThread::RunOnThread([]() {
+  const bool was_paused = System::IsPaused();
+
+  VideoThread::RunOnThread([was_paused]() {
     Initialize();
     if (s_locals.current_main_window != MainWindowType::None)
       return;
 
-    PauseForMenuOpen(false);
+    PauseForMenuOpen(was_paused, false);
     ForceKeyNavEnabled();
     EnqueueSoundEffect(SFX_NAV_ACTIVATE);
 
@@ -337,6 +346,9 @@ void FullscreenUI::OpenCheatsMenu()
         ClosePauseMenuImmediately();
     });
   });
+
+  if (!was_paused)
+    System::PauseSystem(true);
 }
 
 void FullscreenUI::OpenDiscChangeMenu()
@@ -344,8 +356,13 @@ void FullscreenUI::OpenDiscChangeMenu()
   if (!System::IsValid())
     return;
 
+  const bool was_paused = System::IsPaused();
+
   DebugAssert(!VideoThread::IsOnThread());
-  BeginChangeDiscOnCoreThread(true);
+  BeginChangeDiscOnCoreThread(was_paused, true);
+
+  if (!was_paused)
+    System::PauseSystem(true);
 }
 
 void FullscreenUI::FixStateIfPaused()
@@ -362,8 +379,7 @@ void FullscreenUI::ClosePauseMenu()
   if (!VideoThread::HasGPUBackend())
     return;
 
-  if (VideoThread::IsSystemPaused() && !s_locals.was_paused_on_quick_menu_open)
-    Host::RunOnCoreThread([]() { System::PauseSystem(false); });
+  UnpauseForMenuClose();
 
   BeginTransition(SHORT_TRANSITION_TIME, []() {
     s_locals.current_pause_submenu = PauseSubMenu::None;
@@ -378,12 +394,11 @@ void FullscreenUI::ClosePauseMenuImmediately()
     return;
 
   CancelTransition();
-
-  if (VideoThread::IsSystemPaused() && !s_locals.was_paused_on_quick_menu_open)
-    Host::RunOnCoreThread([]() { System::PauseSystem(false); });
+  UnpauseForMenuClose();
 
   s_locals.current_pause_submenu = PauseSubMenu::None;
   s_locals.pause_menu_was_open = false;
+  s_locals.has_pending_window_switch = false;
   SwitchToMainWindow(MainWindowType::None);
 
   // Present frame with menu closed. We have to defer this for a frame so imgui loses keyboard focus.
@@ -391,18 +406,53 @@ void FullscreenUI::ClosePauseMenuImmediately()
     VideoThread::PresentCurrentFrame();
 }
 
+FullscreenUI::MainWindowType FullscreenUI::GetCurrentMainWindow()
+{
+  return s_locals.current_main_window;
+}
+
+bool FullscreenUI::CanCurrentMainWindowStack()
+{
+  // windows that are actually stackable
+  return (s_locals.current_main_window < MainWindowType::SaveStateSelector);
+}
+
+bool FullscreenUI::SetPendingMainWindowSwitch()
+{
+  // Needed because otherwise we could switch two windows within the same frame.
+  if (s_locals.has_pending_window_switch)
+    return false;
+
+  s_locals.has_pending_window_switch = true;
+  return true;
+}
+
 void FullscreenUI::SwitchToMainWindow(MainWindowType type)
 {
-  if (s_locals.current_main_window == type)
-    return;
-
-  s_locals.previous_main_window = (type == MainWindowType::None) ? MainWindowType::None : s_locals.current_main_window;
-  s_locals.current_main_window = type;
   if (!AreAnyDialogsOpen())
   {
     ImGui::SetWindowFocus(nullptr);
     QueueResetFocus(FocusResetType::ViewChanged);
   }
+
+  if (s_locals.current_main_window == type)
+    return;
+
+  // windows that are actually stacked
+  if (type != MainWindowType::None && !CanCurrentMainWindowStack())
+  {
+    WARNING_LOG("Trying to stack incompatible window type {} on {}, ignoring", static_cast<u32>(type),
+                static_cast<u32>(s_locals.current_main_window));
+    s_locals.previous_main_window = MainWindowType::None;
+  }
+  else
+  {
+    s_locals.previous_main_window =
+      (type == MainWindowType::None) ? MainWindowType::None : s_locals.current_main_window;
+  }
+
+  s_locals.current_main_window = type;
+  s_locals.has_pending_window_switch = false;
 
   UpdateRunIdleState();
   FixStateIfPaused();
@@ -432,13 +482,13 @@ void FullscreenUI::ReturnToMainWindow()
 
 void FullscreenUI::ReturnToMainWindow(float transition_time)
 {
-  if (VideoThread::IsSystemPaused() && !s_locals.was_paused_on_quick_menu_open)
-    Host::RunOnCoreThread([]() { System::PauseSystem(false); });
+  UnpauseForMenuClose();
 
   BeginTransition(transition_time, []() {
     s_locals.previous_main_window = MainWindowType::None;
     s_locals.current_pause_submenu = PauseSubMenu::None;
     s_locals.pause_menu_was_open = false;
+    s_locals.has_pending_window_switch = false;
 
     if (VideoThread::HasGPUBackend())
     {
@@ -454,6 +504,20 @@ void FullscreenUI::ReturnToMainWindow(float transition_time)
   });
 }
 
+void FullscreenUI::UnpauseForMenuClose()
+{
+  if (!VideoThread::IsSystemPaused())
+    return;
+
+  s_locals.has_pending_window_switch = false;
+
+  // Represent the frame if we're not running idle, so that the pause indicator is displayed.
+  if (!s_locals.was_paused_on_quick_menu_open)
+    Host::RunOnCoreThread([]() { System::PauseSystem(false); });
+  else
+    Host::RunOnCoreThread([]() { VideoThread::RunOnThread(&VideoThread::PresentCurrentFrame); });
+}
+
 void FullscreenUI::Shutdown()
 {
   DestroyGPUResources();
@@ -462,8 +526,10 @@ void FullscreenUI::Shutdown()
 
   s_locals.current_main_window = MainWindowType::None;
   s_locals.current_pause_submenu = PauseSubMenu::None;
+  s_locals.previous_main_window = MainWindowType::None;
   s_locals.pause_menu_was_open = false;
   s_locals.was_paused_on_quick_menu_open = false;
+  s_locals.has_pending_window_switch = false;
 
   ClearAchievementsState();
   ClearSettingsState();
@@ -652,9 +718,14 @@ void FullscreenUI::DoResume()
     return;
   }
 
+  Error error;
+  bool exists;
   SaveStateListEntry slentry;
-  if (!InitializeSaveStateListEntryFromPath(&slentry, std::move(path), -1, false))
+  if (!InitializeSaveStateListEntryFromPath(&slentry, std::move(path), -1, false, &error, &exists))
+  {
+    ShowToast(OSDMessageType::Error, FSUI_STR("Failed to load resume save state info."), error.TakeDescription());
     return;
+  }
 
   ClearSaveStateEntryList();
   s_locals.save_state_selector_slots.push_back(std::move(slentry));
@@ -805,7 +876,7 @@ void FullscreenUI::StartChangeDiscFromFile()
         if (!GameList::IsScannableFilename(path))
         {
           ShowToast(OSDMessageType::Error, {},
-                    fmt::format(FSUI_FSTR("{} is not a valid disc image."), FileSystem::GetDisplayNameFromPath(path)));
+                    fmt::format(FSUI_FSTR("{} is not a valid disc image."), Path::GetFileName(path)));
         }
         else
         {
@@ -821,15 +892,15 @@ void FullscreenUI::StartChangeDiscFromFile()
                    GetDiscImageFilters(), std::string(Path::GetDirectory(VideoThread::GetGamePath())));
 }
 
-void FullscreenUI::BeginChangeDiscOnCoreThread(bool needs_pause)
+void FullscreenUI::BeginChangeDiscOnCoreThread(bool was_paused, bool needs_pause)
 {
   ChoiceDialogOptions options;
 
-  auto pause_if_needed = [needs_pause]() {
+  auto pause_if_needed = [was_paused, needs_pause]() {
     if (!needs_pause)
       return;
 
-    PauseForMenuOpen(false);
+    PauseForMenuOpen(was_paused, true);
     ForceKeyNavEnabled();
     UpdateRunIdleState();
     FixStateIfPaused();
@@ -1123,7 +1194,8 @@ bool FullscreenUI::LoadBackgroundShader(const std::string& path, Error* error)
   return true;
 }
 
-void FullscreenUI::DrawShaderBackgroundCallback(const ImDrawList* parent_list, const ImDrawCmd* cmd)
+void FullscreenUI::DrawShaderBackgroundCallback(const ImDrawList* parent_list, const ImDrawCmd* cmd, u32 base_vertex,
+                                                u32 base_index)
 {
   if (!g_gpu_device->HasMainSwapChain())
     return;
@@ -1361,26 +1433,29 @@ void FullscreenUI::DrawStartGameWindow()
   {
     ResetFocusHere();
 
-    if (HorizontalMenuItem(GetUserThemeableTexture("fullscreenui/start-file.png", "fullscreenui/start-file.svg"),
-                           FSUI_VSTR("Start File"), FSUI_VSTR("Launch a game by selecting a file/disc image.")))
+    if (UserThemeableHorizontalButton("fullscreenui/start-file.png", "fullscreenui/start-file.svg",
+                                      FSUI_VSTR("Start File"),
+                                      FSUI_VSTR("Launch a game by selecting a file/disc image.")))
     {
       DoStartFile();
     }
 
-    if (HorizontalMenuItem(GetUserThemeableTexture("fullscreenui/start-disc.png", "fullscreenui/start-disc.svg"),
-                           FSUI_VSTR("Start Disc"), FSUI_VSTR("Start a game from a disc in your PC's DVD drive.")))
+    if (UserThemeableHorizontalButton("fullscreenui/start-disc.png", "fullscreenui/start-disc.svg",
+                                      FSUI_VSTR("Start Disc"),
+                                      FSUI_VSTR("Start a game from a disc in your PC's DVD drive.")))
     {
       DoStartDisc();
     }
 
-    if (HorizontalMenuItem(GetUserThemeableTexture("fullscreenui/start-bios.png", "fullscreenui/start-bios.svg"),
-                           FSUI_VSTR("Start BIOS"), FSUI_VSTR("Start the console without any disc inserted.")))
+    if (UserThemeableHorizontalButton("fullscreenui/start-bios.png", "fullscreenui/start-bios.svg",
+                                      FSUI_VSTR("Start BIOS"),
+                                      FSUI_VSTR("Start the console without any disc inserted.")))
     {
       DoStartBIOS();
     }
 
-    if (HorizontalMenuItem(GetUserThemeableTexture("fullscreenui/back-icon.png", "fullscreenui/back-icon.svg"),
-                           FSUI_VSTR("Back"), FSUI_VSTR("Return to the previous menu.")) ||
+    if (UserThemeableHorizontalButton("fullscreenui/back-icon.png", "fullscreenui/back-icon.svg", FSUI_VSTR("Back"),
+                                      FSUI_VSTR("Return to the previous menu.")) ||
         (!AreAnyDialogsOpen() && WantsToCloseMenu()))
     {
       BeginTransition([]() { SwitchToMainWindow(MainWindowType::Landing); });
@@ -1426,23 +1501,22 @@ void FullscreenUI::DrawExitWindow()
   {
     ResetFocusHere();
 
-    if (HorizontalMenuItem(GetUserThemeableTexture("fullscreenui/back-icon.png", "fullscreenui/back-icon.svg"),
-                           FSUI_VSTR("Back"), FSUI_VSTR("Return to the previous menu.")) ||
+    if (UserThemeableHorizontalButton("fullscreenui/back-icon.png", "fullscreenui/back-icon.svg", FSUI_VSTR("Back"),
+                                      FSUI_VSTR("Return to the previous menu.")) ||
         WantsToCloseMenu())
     {
       BeginTransition([]() { SwitchToMainWindow(MainWindowType::Landing); });
     }
 
-    if (HorizontalMenuItem(GetUserThemeableTexture("fullscreenui/exit.png", "fullscreenui/exit.svg"),
-                           FSUI_VSTR("Exit DuckStation"),
-                           FSUI_VSTR("Completely exits the application, returning you to your desktop.")))
+    if (UserThemeableHorizontalButton("fullscreenui/exit.png", "fullscreenui/exit.svg", FSUI_VSTR("Exit DuckStation"),
+                                      FSUI_VSTR("Completely exits the application, returning you to your desktop.")))
     {
       DoRequestExit();
     }
 
-    if (HorizontalMenuItem(GetUserThemeableTexture("fullscreenui/desktop-mode.png", "fullscreenui/desktop-mode.svg"),
-                           FSUI_VSTR("Desktop Mode"),
-                           FSUI_VSTR("Exits Big Picture mode, returning to the desktop interface.")))
+    if (UserThemeableHorizontalButton("fullscreenui/desktop-mode.png", "fullscreenui/desktop-mode.svg",
+                                      FSUI_VSTR("Desktop Mode"),
+                                      FSUI_VSTR("Exits Big Picture mode, returning to the desktop interface.")))
     {
       DoDesktopMode();
     }
@@ -1466,7 +1540,7 @@ float FullscreenUI::GetBackgroundAlpha()
     }
     else
     {
-      return 0.90f;
+      return UIStyle.IsDarkTheme ? 0.90f : 0.92f;
     }
   }
   else
@@ -1487,7 +1561,7 @@ void FullscreenUI::DrawPauseMenu()
 
   SmallString buffer;
 
-  ImDrawList* dl = ImGui::GetBackgroundDrawList();
+  ImDrawList* const dl = ImGui::GetBackgroundDrawList();
   const ImVec2 display_size(ImGui::GetIO().DisplaySize);
   const ImU32 title_text_color = ImGui::GetColorU32(UIStyle.BackgroundTextColor);
   const ImU32 text_color = ImGui::GetColorU32(DarkerColor(UIStyle.BackgroundTextColor, 0.85f));
@@ -1498,8 +1572,17 @@ void FullscreenUI::DrawPauseMenu()
   {
     const float scaled_text_spacing = LayoutScale(4.0f);
     const float scaled_top_bar_padding = LayoutScale(top_bar_padding);
-    dl->AddRectFilled(ImVec2(0.0f, 0.0f), ImVec2(display_size.x, scaled_top_bar_height),
-                      ImGui::GetColorU32(ModAlpha(UIStyle.BackgroundColor, 0.95f)), 0.0f);
+    const ImVec2 top_bar_min = ImVec2(0.0f, 0.0f);
+    const ImVec2 top_bar_max = ImVec2(display_size.x, scaled_top_bar_height);
+    if (UIStyle.BlurMenuBackground && BeginBlurBackground(dl, top_bar_min, top_bar_max))
+    {
+      dl->AddRectFilled(top_bar_min, top_bar_max, ImGui::GetColorU32(ModAlpha(UIStyle.BackgroundColor, 1.0f)), 0.0f);
+      EndBlurBackground(dl);
+    }
+    else
+    {
+      dl->AddRectFilled(top_bar_min, top_bar_max, ImGui::GetColorU32(ModAlpha(UIStyle.BackgroundColor, 0.95f)), 0.0f);
+    }
 
     const std::string& game_title = VideoThread::GetGameTitle();
     const std::string& game_serial = VideoThread::GetGameSerial();
@@ -1578,8 +1661,8 @@ void FullscreenUI::DrawPauseMenu()
 
   // background
   dl->AddRectFilled(ImVec2(0.0f, scaled_top_bar_height),
-                    ImVec2(display_size.x, display_size.x - scaled_top_bar_height - LayoutScale(LAYOUT_FOOTER_HEIGHT)),
-                    ImGui::GetColorU32(ModAlpha(UIStyle.BackgroundColor, 0.825f)));
+                    ImVec2(display_size.x, display_size.y - LayoutScale(LAYOUT_FOOTER_HEIGHT)),
+                    ImGui::GetColorU32(ModAlpha(UIStyle.BackgroundColor, 0.9f)));
 
   DrawAchievementsPauseMenuOverlays(scaled_top_bar_height);
 
@@ -1658,7 +1741,7 @@ void FullscreenUI::DrawPauseMenu()
         if (MenuButtonWithoutSummary(FSUI_ICONVSTR(ICON_FA_COMPACT_DISC, "Change Disc")))
         {
           BeginTransition(SHORT_TRANSITION_TIME, []() { s_locals.current_main_window = MainWindowType::None; });
-          Host::RunOnCoreThread([]() { BeginChangeDiscOnCoreThread(false); });
+          Host::RunOnCoreThread([]() { BeginChangeDiscOnCoreThread(true, false); });
         }
 
         if (MenuButtonWithoutSummary(FSUI_ICONVSTR(ICON_FA_SLIDERS, "Settings")))
@@ -1716,6 +1799,8 @@ void FullscreenUI::DrawPauseMenu()
 
   EndFullscreenWindow();
 
+  SetFullscreenFooterBlur(false);
+
   if (IsGamepadInputSource())
   {
     SetFullscreenFooterText(std::array{std::make_pair(ICON_PF_XBOX_DPAD_UP_DOWN, FSUI_VSTR("Change Selection")),
@@ -1737,7 +1822,6 @@ void FullscreenUI::InitializePlaceholderSaveStateListEntry(SaveStateListEntry* l
                                                  slot) :
                                      FSUI_STR("Quick Save");
   li->summary = FSUI_STR("No save present in this slot.");
-  li->state_path = {};
   li->timestamp = 0;
   li->slot = slot;
   li->preview_texture = {};
@@ -1747,19 +1831,32 @@ void FullscreenUI::InitializePlaceholderSaveStateListEntry(SaveStateListEntry* l
 bool FullscreenUI::InitializeSaveStateListEntryFromSerial(SaveStateListEntry* li, const std::string& serial, s32 slot,
                                                           bool global)
 {
-  const std::string path = (global ? System::GetGlobalSaveStatePath(slot) : System::GetGameSaveStatePath(serial, slot));
-  if (!InitializeSaveStateListEntryFromPath(li, path.c_str(), slot, global))
+  Error error;
+  bool exists;
+  std::string path = (global ? System::GetGlobalSaveStatePath(slot) : System::GetGameSaveStatePath(serial, slot));
+  if (!InitializeSaveStateListEntryFromPath(li, std::move(path), slot, global, &error, &exists))
   {
     InitializePlaceholderSaveStateListEntry(li, slot, global);
+
+    if (exists)
+    {
+      // Show error instead.
+      li->summary = error.TakeDescription();
+      return true;
+    }
+
     return false;
   }
 
   return true;
 }
 
-bool FullscreenUI::InitializeSaveStateListEntryFromPath(SaveStateListEntry* li, std::string path, s32 slot, bool global)
+bool FullscreenUI::InitializeSaveStateListEntryFromPath(SaveStateListEntry* li, std::string path, s32 slot, bool global,
+                                                        Error* error, bool* exists)
 {
-  std::optional<ExtendedSaveStateInfo> ssi(System::GetExtendedSaveStateInfo(path.c_str()));
+  li->state_path = std::move(path);
+
+  std::optional<ExtendedSaveStateInfo> ssi = System::GetExtendedSaveStateInfo(li->state_path.c_str(), error, exists);
   if (!ssi.has_value())
     return false;
 
@@ -1776,7 +1873,6 @@ bool FullscreenUI::InitializeSaveStateListEntryFromPath(SaveStateListEntry* li, 
     FSUI_FSTR("Saved {}"), Host::FormatNumber(Host::NumberFormatType::ShortDateTime, static_cast<s64>(ssi->timestamp)));
   li->timestamp = ssi->timestamp;
   li->slot = slot;
-  li->state_path = std::move(path);
   li->game_path = std::move(ssi->media_path);
   li->global = global;
   if (ssi->screenshot.IsValid())
@@ -1910,7 +2006,7 @@ void FullscreenUI::DrawSaveStateSelector()
     closed = true;
 
   if (BeginFullscreenWindow(ImVec2(0.0f, 0.0f), heading_size, "##save_state_selector_title",
-                            ModAlpha(UIStyle.PrimaryColor, GetBackgroundAlpha())))
+                            ModAlpha(UIStyle.PrimaryColor, GetBackgroundAlpha()), 0.0f, ImVec2(), 0, true))
   {
     BeginNavBar();
     if (NavButton(ICON_PF_NAVIGATION_BACK, true, true))
@@ -1929,7 +2025,7 @@ void FullscreenUI::DrawSaveStateSelector()
         ImVec2(0.0f, heading_size.y),
         ImVec2(io.DisplaySize.x, io.DisplaySize.y - heading_size.y - LayoutScale(LAYOUT_FOOTER_HEIGHT)),
         "##save_state_selector_list", ModAlpha(UIStyle.BackgroundColor, GetBackgroundAlpha()), 0.0f,
-        ImVec2(LAYOUT_MENU_WINDOW_X_PADDING, LAYOUT_MENU_WINDOW_Y_PADDING)))
+        ImVec2(LAYOUT_MENU_WINDOW_X_PADDING, LAYOUT_MENU_WINDOW_Y_PADDING), 0, true))
   {
     ResetFocusHere();
     BeginMenuButtons();
@@ -2009,9 +2105,9 @@ void FullscreenUI::DrawSaveStateSelector()
           // avoid closing while drawing
           pressed_entry = &entry;
         }
-        else if (hovered &&
-                 (ImGui::IsItemClicked(ImGuiMouseButton_Right) ||
-                  ImGui::IsKeyPressed(ImGuiKey_NavGamepadInput, false) || ImGui::IsKeyPressed(ImGuiKey_F1, false)))
+        else if (hovered && (ImGui::IsItemClicked(ImGuiMouseButton_Right) ||
+                             ImGui::IsKeyPressed(ImGuiKey_NavGamepadContextMenu, false) ||
+                             ImGui::IsKeyPressed(ImGuiKey_F1, false)))
         {
           CancelPendingMenuClose();
 
@@ -2060,9 +2156,14 @@ void FullscreenUI::DrawSaveStateSelector()
                   g_gpu_device->RecycleTexture(std::move(entry.preview_texture));
 
                   if (s_locals.save_state_selector_loading)
+                  {
                     s_locals.save_state_selector_slots.erase(s_locals.save_state_selector_slots.begin() + i);
+                  }
                   else
+                  {
+                    entry.state_path = {};
                     InitializePlaceholderSaveStateListEntry(&entry, entry.slot, entry.global);
+                  }
                 }
                 else
                 {
@@ -2134,9 +2235,37 @@ void FullscreenUI::DrawSaveStateSelector()
 
 bool FullscreenUI::OpenLoadStateSelectorForGameResume(const GameList::Entry* entry)
 {
+  Error error;
+  bool exists;
   SaveStateListEntry slentry;
-  if (!InitializeSaveStateListEntryFromSerial(&slentry, entry->serial, -1, false))
-    return false;
+  if (!InitializeSaveStateListEntryFromPath(&slentry, System::GetGameSaveStatePath(entry->serial, -1), -1, false,
+                                            &error, &exists))
+  {
+    if (!exists)
+      return false;
+
+    OpenConfirmMessageDialog(
+      ICON_EMOJI_NO_ENTRY_SIGN, FSUI_ICONVSTR(ICON_FA_FOLDER_OPEN, "Load Resume State"),
+      fmt::format(
+        FSUI_FSTR("A resume save state was found for this game, but it is corrupted and cannot be loaded:\n\n{}\n\n"
+                  "Do you want to delete the save state and boot the game anyway?"),
+        error.GetDescription()),
+      [path = System::GetGameSaveStatePath(entry->serial, -1), game_path = entry->path](bool accepted) {
+        if (accepted)
+        {
+          Error error;
+          if (FileSystem::DeleteFile(path.c_str(), &error))
+            ShowToast(OSDMessageType::Info, {}, FSUI_STR("Save state deleted."));
+          else
+            ShowToast(OSDMessageType::Error, FSUI_STR("Failed to delete save state."), error.TakeDescription());
+
+          DoStartPath(std::move(game_path));
+        }
+      },
+      FSUI_ICONSTR(ICON_FA_FOLDER_MINUS, "Delete And Boot"), FSUI_ICONSTR(ICON_FA_XMARK, "Cancel"));
+    ClearSaveStateEntryList();
+    return true;
+  }
 
   slentry.game_path = entry->path;
   s_locals.save_state_selector_slots.push_back(std::move(slentry));
@@ -2200,6 +2329,8 @@ void FullscreenUI::DrawResumeStateSelector()
     Error error;
     if (FileSystem::DeleteFile(entry.state_path.c_str(), &error))
     {
+      ShowToast(OSDMessageType::Info, {}, FSUI_STR("Save state deleted."));
+
       std::string game_path = std::move(entry.game_path);
       ClearSaveStateEntryList();
       CloseFixedPopupDialogImmediately();

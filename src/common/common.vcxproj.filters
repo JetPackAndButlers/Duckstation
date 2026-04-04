@@ -58,6 +58,7 @@
     </ClInclude>
     <ClInclude Include="time_helpers.h" />
     <ClInclude Include="string_pool.h" />
+    <ClInclude Include="bcdutils.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="small_string.cpp" />
@@ -89,6 +90,7 @@
     <ClCompile Include="thirdparty\aes.cpp" />
     <ClCompile Include="task_queue.cpp" />
     <ClCompile Include="string_pool.cpp" />
+    <ClCompile Include="settings_interface.cpp" />
   </ItemGroup>
   <ItemGroup>
     <Natvis Include="bitfield.natvis" />

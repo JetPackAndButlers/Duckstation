@@ -28,6 +28,8 @@
 
 #include "moc_setupwizarddialog.cpp"
 
+using namespace Qt::StringLiterals;
+
 SetupWizardDialog::SetupWizardDialog()
 {
   setupUi();
@@ -178,15 +180,11 @@ void SetupWizardDialog::setupLanguagePage(bool initial)
 {
   SettingWidgetBinder::DisconnectWidget(m_ui.theme);
   m_ui.theme->clear();
-  SettingWidgetBinder::BindWidgetToEnumSetting(nullptr, m_ui.theme, "UI", "Theme", InterfaceSettingsWidget::THEME_NAMES,
-                                               InterfaceSettingsWidget::THEME_VALUES, QtHost::GetDefaultThemeName(),
-                                               "MainWindow");
-  connect(m_ui.theme, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &QtHost::UpdateApplicationTheme);
+  InterfaceSettingsWidget::setupThemeCombo(m_ui.theme);
 
   SettingWidgetBinder::DisconnectWidget(m_ui.language);
   m_ui.language->clear();
-  InterfaceSettingsWidget::populateLanguageDropdown(m_ui.language);
-  SettingWidgetBinder::BindWidgetToStringSetting(nullptr, m_ui.language, "Main", "Language", {});
+  InterfaceSettingsWidget::setupLanguageCombo(m_ui.language);
   connect(m_ui.language, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
           &SetupWizardDialog::languageChanged);
 
@@ -327,7 +325,11 @@ void SetupWizardDialog::onSearchDirectoryListItemChanged(QTreeWidgetItem* item, 
     return;
 
   const std::string path = item->text(0).toStdString();
-  if (item->checkState(1) == Qt::Checked)
+  const bool recursive = (item->checkState(1) == Qt::Checked);
+
+  item->setIcon(0, QIcon::fromTheme(recursive ? "folder-open-line"_L1 : "folder-line"_L1));
+
+  if (recursive)
   {
     Core::RemoveValueFromBaseStringListSetting("GameList", "Paths", path.c_str());
     Core::AddValueToBaseStringListSetting("GameList", "RecursivePaths", path.c_str());
@@ -345,6 +347,7 @@ void SetupWizardDialog::addPathToTable(const std::string& path, bool recursive)
 {
   QTreeWidgetItem* const item = new QTreeWidgetItem();
   item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+  item->setIcon(0, QIcon::fromTheme(recursive ? "folder-open-line"_L1 : "folder-line"_L1));
   item->setText(0, QString::fromStdString(path));
   item->setCheckState(1, recursive ? Qt::Checked : Qt::Unchecked);
   m_ui.searchDirectoryList->addTopLevelItem(item);

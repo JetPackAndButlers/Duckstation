@@ -1,8 +1,9 @@
-// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "xinput_source.h"
 #include "input_manager.h"
+#include "translation.h"
 
 #include "common/assert.h"
 #include "common/bitutils.h"
@@ -17,13 +18,16 @@
 
 LOG_CHANNEL(XInputSource);
 
+static constexpr u32 MOTOR_INDEX_LARGE = 0;
+static constexpr u32 MOTOR_INDEX_SMALL = 1;
+
 static constexpr std::array<const char*, XInputSource::NUM_AXES> s_axis_names = {{
-  "LeftX",        // AXIS_LEFTX
-  "LeftY",        // AXIS_LEFTY
-  "RightX",       // AXIS_RIGHTX
-  "RightY",       // AXIS_RIGHTY
-  "LeftTrigger",  // AXIS_TRIGGERLEFT
-  "RightTrigger", // AXIS_TRIGGERRIGHT
+  TRANSLATE_NOOP("XInputSource", "LeftX"),        // AXIS_LEFTX
+  TRANSLATE_NOOP("XInputSource", "LeftY"),        // AXIS_LEFTY
+  TRANSLATE_NOOP("XInputSource", "RightX"),       // AXIS_RIGHTX
+  TRANSLATE_NOOP("XInputSource", "RightY"),       // AXIS_RIGHTY
+  TRANSLATE_NOOP("XInputSource", "LeftTrigger"),  // AXIS_TRIGGERLEFT
+  TRANSLATE_NOOP("XInputSource", "RightTrigger"), // AXIS_TRIGGERRIGHT
 }};
 static constexpr std::array<std::array<const char*, 2>, XInputSource::NUM_AXES> s_axis_icons = {{
   {{ICON_PF_LEFT_ANALOG_LEFT, ICON_PF_LEFT_ANALOG_RIGHT}},   // AXIS_LEFTX
@@ -44,21 +48,21 @@ static constexpr std::array<std::array<GenericInputBinding, 2>, XInputSource::NU
   }};
 
 static constexpr std::array<const char*, XInputSource::NUM_BUTTONS> s_button_names = {{
-  "DPadUp",        // XINPUT_GAMEPAD_DPAD_UP
-  "DPadDown",      // XINPUT_GAMEPAD_DPAD_DOWN
-  "DPadLeft",      // XINPUT_GAMEPAD_DPAD_LEFT
-  "DPadRight",     // XINPUT_GAMEPAD_DPAD_RIGHT
-  "Start",         // XINPUT_GAMEPAD_START
-  "Back",          // XINPUT_GAMEPAD_BACK
-  "LeftStick",     // XINPUT_GAMEPAD_LEFT_THUMB
-  "RightStick",    // XINPUT_GAMEPAD_RIGHT_THUMB
-  "LeftShoulder",  // XINPUT_GAMEPAD_LEFT_SHOULDER
-  "RightShoulder", // XINPUT_GAMEPAD_RIGHT_SHOULDER
-  "A",             // XINPUT_GAMEPAD_A
-  "B",             // XINPUT_GAMEPAD_B
-  "X",             // XINPUT_GAMEPAD_X
-  "Y",             // XINPUT_GAMEPAD_Y
-  "Guide",         // XINPUT_GAMEPAD_GUIDE
+  TRANSLATE_NOOP("XInputSource", "DPadUp"),        // XINPUT_GAMEPAD_DPAD_UP
+  TRANSLATE_NOOP("XInputSource", "DPadDown"),      // XINPUT_GAMEPAD_DPAD_DOWN
+  TRANSLATE_NOOP("XInputSource", "DPadLeft"),      // XINPUT_GAMEPAD_DPAD_LEFT
+  TRANSLATE_NOOP("XInputSource", "DPadRight"),     // XINPUT_GAMEPAD_DPAD_RIGHT
+  TRANSLATE_NOOP("XInputSource", "Start"),         // XINPUT_GAMEPAD_START
+  TRANSLATE_NOOP("XInputSource", "Back"),          // XINPUT_GAMEPAD_BACK
+  TRANSLATE_NOOP("XInputSource", "LeftStick"),     // XINPUT_GAMEPAD_LEFT_THUMB
+  TRANSLATE_NOOP("XInputSource", "RightStick"),    // XINPUT_GAMEPAD_RIGHT_THUMB
+  TRANSLATE_NOOP("XInputSource", "LeftShoulder"),  // XINPUT_GAMEPAD_LEFT_SHOULDER
+  TRANSLATE_NOOP("XInputSource", "RightShoulder"), // XINPUT_GAMEPAD_RIGHT_SHOULDER
+  TRANSLATE_NOOP("XInputSource", "A"),             // XINPUT_GAMEPAD_A
+  TRANSLATE_NOOP("XInputSource", "B"),             // XINPUT_GAMEPAD_B
+  TRANSLATE_NOOP("XInputSource", "X"),             // XINPUT_GAMEPAD_X
+  TRANSLATE_NOOP("XInputSource", "Y"),             // XINPUT_GAMEPAD_Y
+  TRANSLATE_NOOP("XInputSource", "Guide"),         // XINPUT_GAMEPAD_GUIDE
 }};
 static constexpr std::array<u16, XInputSource::NUM_BUTTONS> s_button_masks = {{
   XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_LEFT, XINPUT_GAMEPAD_DPAD_RIGHT,
@@ -67,6 +71,19 @@ static constexpr std::array<u16, XInputSource::NUM_BUTTONS> s_button_masks = {{
   XINPUT_GAMEPAD_Y,
   0x400, // XINPUT_GAMEPAD_GUIDE
 }};
+
+static constexpr const std::array s_scp_axis_fields = {
+  &SCP_EXTN::SCP_LX, &SCP_EXTN::SCP_LY, &SCP_EXTN::SCP_RX, &SCP_EXTN::SCP_RY, &SCP_EXTN::SCP_L2, &SCP_EXTN::SCP_R2,
+};
+static_assert(std::size(s_scp_axis_fields) == XInputSource::NUM_AXES);
+
+static constexpr const std::array s_scp_button_fields = {
+  &SCP_EXTN::SCP_UP,     &SCP_EXTN::SCP_DOWN, &SCP_EXTN::SCP_LEFT, &SCP_EXTN::SCP_RIGHT, &SCP_EXTN::SCP_START,
+  &SCP_EXTN::SCP_SELECT, &SCP_EXTN::SCP_L3,   &SCP_EXTN::SCP_R3,   &SCP_EXTN::SCP_L1,    &SCP_EXTN::SCP_R1,
+  &SCP_EXTN::SCP_X,      &SCP_EXTN::SCP_C,    &SCP_EXTN::SCP_S,    &SCP_EXTN::SCP_T,     &SCP_EXTN::SCP_PS,
+};
+static_assert(std::size(s_scp_button_fields) == XInputSource::NUM_BUTTONS);
+
 static constexpr std::array<const char*, XInputSource::NUM_BUTTONS> s_button_icons = {{
   ICON_PF_XBOX_DPAD_UP,       // XINPUT_GAMEPAD_DPAD_UP
   ICON_PF_XBOX_DPAD_DOWN,     // XINPUT_GAMEPAD_DPAD_DOWN
@@ -144,6 +161,14 @@ bool XInputSource::Initialize(const SettingsInterface& si, std::unique_lock<std:
     return false;
   }
 
+  // Only present with SCP extension (DSHidMini)
+  m_xinput_get_extended =
+    reinterpret_cast<decltype(m_xinput_get_extended)>(GetProcAddress(m_xinput_module, "XInputGetExtended"));
+  if (m_xinput_get_extended)
+    INFO_COLOR_LOG(StrongGreen, "XInputGetExtended() is available, SCP extension features enabled.");
+  else
+    INFO_COLOR_LOG(StrongOrange, "XInputGetExtended() is not available, SCP extension features disabled.");
+
   ReloadDevices();
   return true;
 }
@@ -152,14 +177,26 @@ void XInputSource::UpdateSettings(const SettingsInterface& si, std::unique_lock<
 {
 }
 
+bool XInputSource::UseSCPExtn() const
+{
+  return (m_xinput_get_extended != nullptr);
+}
+
+DWORD XInputSource::GetControllerState(u32 index, ControllerState* state)
+{
+  if (UseSCPExtn())
+    return m_xinput_get_extended(index, &state->scp_extn);
+  else
+    return m_xinput_get_state(index, &state->xinput);
+}
+
 bool XInputSource::ReloadDevices()
 {
   bool changed = false;
   for (u32 i = 0; i < NUM_CONTROLLERS; i++)
   {
-    XINPUT_STATE new_state;
-    DWORD result = m_xinput_get_state(i, &new_state);
-
+    ControllerState new_state;
+    const DWORD result = GetControllerState(i, &new_state);
     if (result == ERROR_SUCCESS)
     {
       if (m_controllers[i].connected)
@@ -198,6 +235,7 @@ void XInputSource::Shutdown()
   m_xinput_get_state = nullptr;
   m_xinput_set_state = nullptr;
   m_xinput_get_capabilities = nullptr;
+  m_xinput_get_extended = nullptr;
 }
 
 void XInputSource::PollEvents()
@@ -208,9 +246,8 @@ void XInputSource::PollEvents()
     if (!was_connected)
       continue;
 
-    XINPUT_STATE new_state;
-    DWORD result = m_xinput_get_state(i, &new_state);
-
+    ControllerState new_state;
+    const DWORD result = GetControllerState(i, &new_state);
     if (result == ERROR_SUCCESS)
     {
       if (!was_connected)
@@ -278,12 +315,12 @@ std::optional<InputBindingKey> XInputSource::ParseKeyString(std::string_view dev
     key.source_subtype = InputSubclass::ControllerMotor;
     if (binding == "LargeMotor")
     {
-      key.data = 0;
+      key.data = MOTOR_INDEX_LARGE;
       return key;
     }
     else if (binding == "SmallMotor")
     {
-      key.data = 1;
+      key.data = MOTOR_INDEX_SMALL;
       return key;
     }
     else
@@ -342,31 +379,62 @@ TinyString XInputSource::ConvertKeyToString(InputBindingKey key)
     }
     else if (key.source_subtype == InputSubclass::ControllerMotor)
     {
-      ret.format("XInput-{}/{}Motor", static_cast<u32>(key.source_index), key.data ? "Large" : "Small");
+      ret.format("XInput-{}/{}Motor", static_cast<u32>(key.source_index),
+                 (key.data == MOTOR_INDEX_SMALL) ? "Small" : "Large");
     }
   }
 
   return ret;
 }
 
-TinyString XInputSource::ConvertKeyToIcon(InputBindingKey key, InputManager::BindingIconMappingFunction mapper)
+TinyString XInputSource::ConvertKeyToDisplayString(InputBindingKey key, bool allow_icon,
+                                                   InputManager::BindingIconMappingFunction mapper)
 {
   TinyString ret;
 
-  if (key.source_type == InputSourceType::SDL)
+  if (key.source_type == InputSourceType::XInput)
   {
-    if (key.source_subtype == InputSubclass::ControllerAxis)
+    if (allow_icon)
     {
-      if (key.data < std::size(s_axis_icons) && key.modifier != InputModifier::FullAxis)
+      if (key.source_subtype == InputSubclass::ControllerAxis)
       {
-        ret.format("XInput-{}  {}", static_cast<u32>(key.source_index),
-                   mapper(s_axis_icons[key.data][key.modifier == InputModifier::None]));
+        if (key.data < std::size(s_axis_icons) && key.modifier != InputModifier::FullAxis)
+        {
+          ret.format(TRANSLATE_FS("XInputSource", "XInput-{0}  {1}"), static_cast<u32>(key.source_index),
+                     mapper(s_axis_icons[key.data][key.modifier == InputModifier::None]));
+        }
+      }
+      else if (key.source_subtype == InputSubclass::ControllerButton)
+      {
+        if (key.data < std::size(s_button_icons))
+          ret.format(TRANSLATE_FS("XInputSource", "XInput-{0}  {1}"), static_cast<u32>(key.source_index),
+                     mapper(s_button_icons[key.data]));
+      }
+      else if (key.source_subtype == InputSubclass::ControllerMotor)
+      {
+        ret.format(TRANSLATE_FS("XInputSource", "XInput-{0}/{1}"), static_cast<u32>(key.source_index),
+                   (key.data == MOTOR_INDEX_SMALL) ? ICON_PF_VIBRATION : ICON_PF_VIBRATION_L);
       }
     }
-    else if (key.source_subtype == InputSubclass::ControllerButton)
+    else
     {
-      if (key.data < std::size(s_button_icons))
-        ret.format("XInput-{}  {}", static_cast<u32>(key.source_index), mapper(s_button_icons[key.data]));
+      if (key.source_subtype == InputSubclass::ControllerAxis && key.data < std::size(s_axis_names))
+      {
+        const char modifier = key.modifier == InputModifier::Negate ? '-' : '+';
+        ret.format(TRANSLATE_FS("XInputSource", "XInput-{0}/{1}{2}"), static_cast<u32>(key.source_index), modifier,
+                   Host::TranslateToStringView("XInputSource", s_axis_names[key.data]));
+      }
+      else if (key.source_subtype == InputSubclass::ControllerButton && key.data < std::size(s_button_names))
+      {
+        ret.format(TRANSLATE_FS("XInputSource", "XInput-{0}/{1}"), static_cast<u32>(key.source_index),
+                   Host::TranslateToStringView("XInputSource", s_button_names[key.data]));
+      }
+      else if (key.source_subtype == InputSubclass::ControllerMotor)
+      {
+        ret.format(TRANSLATE_FS("XInputSource", "XInput-{0}/{1}"), static_cast<u32>(key.source_index),
+                   (key.data == MOTOR_INDEX_SMALL) ? TRANSLATE_SV("XInputSource", "SmallMotor") :
+                                                     TRANSLATE_SV("XInputSource", "LargeMotor"));
+      }
     }
   }
 
@@ -404,10 +472,16 @@ InputManager::DeviceEffectList XInputSource::EnumerateEffects(std::optional<Inpu
       continue;
 
     if (cd.has_large_motor)
-      ret.emplace_back(InputBindingInfo::Type::Motor, MakeGenericControllerMotorKey(InputSourceType::XInput, i, 0));
+    {
+      ret.emplace_back(InputBindingInfo::Type::Motor,
+                       MakeGenericControllerMotorKey(InputSourceType::XInput, i, MOTOR_INDEX_LARGE));
+    }
 
     if (cd.has_small_motor)
-      ret.emplace_back(InputBindingInfo::Type::Motor, MakeGenericControllerMotorKey(InputSourceType::XInput, i, 1));
+    {
+      ret.emplace_back(InputBindingInfo::Type::Motor,
+                       MakeGenericControllerMotorKey(InputSourceType::XInput, i, MOTOR_INDEX_SMALL));
+    }
   }
 
   return ret;
@@ -457,7 +531,7 @@ bool XInputSource::GetGenericBindingMapping(std::string_view device, GenericInpu
   return true;
 }
 
-void XInputSource::HandleControllerConnection(u32 index, const XINPUT_STATE& state)
+void XInputSource::HandleControllerConnection(u32 index, const ControllerState& state)
 {
   INFO_LOG("XInput controller {} connected.", index);
 
@@ -471,8 +545,16 @@ void XInputSource::HandleControllerConnection(u32 index, const XINPUT_STATE& sta
   cd.has_small_motor = caps.Vibration.wRightMotorSpeed != 0;
   cd.last_state = state;
 
+  // try to detect xbox-like pads...
+  std::optional<InputManager::GamepadButtonType> gamepad_button_type;
+  if (caps.Type == XINPUT_DEVTYPE_GAMEPAD && caps.SubType == XINPUT_DEVSUBTYPE_GAMEPAD &&
+      !(caps.Flags & XINPUT_CAPS_NO_NAVIGATION))
+  {
+    gamepad_button_type = InputManager::GamepadButtonType::Xbox;
+  }
+
   InputManager::OnInputDeviceConnected(MakeGenericControllerDeviceKey(InputSourceType::XInput, index),
-                                       GetDeviceIdentifier(index), GetDeviceName(index));
+                                       GetDeviceIdentifier(index), GetDeviceName(index), gamepad_button_type);
 }
 
 void XInputSource::HandleControllerDisconnection(u32 index)
@@ -485,14 +567,16 @@ void XInputSource::HandleControllerDisconnection(u32 index)
                                           GetDeviceIdentifier(index));
 }
 
-void XInputSource::CheckForStateChanges(u32 index, const XINPUT_STATE& new_state)
+void XInputSource::CheckForStateChanges(u32 index, const ControllerState& new_state)
 {
   ControllerData& cd = m_controllers[index];
-  if (new_state.dwPacketNumber == cd.last_state.dwPacketNumber)
-    return;
+  if (!UseSCPExtn())
+  {
+    if (new_state.xinput.dwPacketNumber == cd.last_state.xinput.dwPacketNumber)
+      return;
 
-  XINPUT_GAMEPAD& ogp = cd.last_state.Gamepad;
-  const XINPUT_GAMEPAD& ngp = new_state.Gamepad;
+    XINPUT_GAMEPAD& ogp = cd.last_state.xinput.Gamepad;
+    const XINPUT_GAMEPAD& ngp = new_state.xinput.Gamepad;
 
 #define CHECK_AXIS(field, axis, min_value, max_value)                                                                  \
   if (ogp.field != ngp.field)                                                                                          \
@@ -502,28 +586,57 @@ void XInputSource::CheckForStateChanges(u32 index, const XINPUT_STATE& new_state
                                s_xinput_generic_binding_axis_mapping[axis][BoolToUInt8(ngp.field >= 0)]);              \
   }
 
-  // Y axes is inverted in XInput when compared to SDL.
-  CHECK_AXIS(sThumbLX, AXIS_LEFTX, 32768, 32767);
-  CHECK_AXIS(sThumbLY, AXIS_LEFTY, -32768, -32767);
-  CHECK_AXIS(sThumbRX, AXIS_RIGHTX, 32768, 32767);
-  CHECK_AXIS(sThumbRY, AXIS_RIGHTY, -32768, -32767);
-  CHECK_AXIS(bLeftTrigger, AXIS_LEFTTRIGGER, 0, 255);
-  CHECK_AXIS(bRightTrigger, AXIS_RIGHTTRIGGER, 0, 255);
+    // Y axes is inverted in XInput when compared to SDL.
+    CHECK_AXIS(sThumbLX, AXIS_LEFTX, 32768, 32767);
+    CHECK_AXIS(sThumbLY, AXIS_LEFTY, -32768, -32767);
+    CHECK_AXIS(sThumbRX, AXIS_RIGHTX, 32768, 32767);
+    CHECK_AXIS(sThumbRY, AXIS_RIGHTY, -32768, -32767);
+    CHECK_AXIS(bLeftTrigger, AXIS_LEFTTRIGGER, 0, 255);
+    CHECK_AXIS(bRightTrigger, AXIS_RIGHTTRIGGER, 0, 255);
 
 #undef CHECK_AXIS
 
-  const u16 old_button_bits = ogp.wButtons;
-  const u16 new_button_bits = ngp.wButtons;
-  if (old_button_bits != new_button_bits)
-  {
-    for (u32 button = 0; button < NUM_BUTTONS; button++)
+    const u16 old_button_bits = ogp.wButtons;
+    const u16 new_button_bits = ngp.wButtons;
+    if (old_button_bits != new_button_bits)
     {
-      const u16 button_mask = s_button_masks[button];
-      if ((old_button_bits & button_mask) != (new_button_bits & button_mask))
+      for (u32 button = 0; button < NUM_BUTTONS; button++)
       {
-        const GenericInputBinding generic_key = s_xinput_generic_binding_button_mapping[button];
-        const float value = ((new_button_bits & button_mask) != 0) ? 1.0f : 0.0f;
-        InputManager::InvokeEvents(MakeGenericControllerButtonKey(InputSourceType::XInput, index, button), value,
+        const u16 button_mask = s_button_masks[button];
+        if ((old_button_bits & button_mask) != (new_button_bits & button_mask))
+        {
+          const GenericInputBinding generic_key = s_xinput_generic_binding_button_mapping[button];
+          const float value = ((new_button_bits & button_mask) != 0) ? 1.0f : 0.0f;
+          InputManager::InvokeEvents(MakeGenericControllerButtonKey(InputSourceType::XInput, index, button), value,
+                                     generic_key);
+        }
+      }
+    }
+  }
+  else
+  {
+    for (u32 i = 0; i < NUM_AXES; i++)
+    {
+      const float old_value = (cd.last_state.scp_extn.*s_scp_axis_fields[i]);
+      const float new_value = (new_state.scp_extn.*s_scp_axis_fields[i]);
+      if (old_value != new_value)
+      {
+        // Y axes is inverted in XInput when compared to SDL.
+        const bool invert = (i == AXIS_LEFTY || i == AXIS_RIGHTY);
+        InputManager::InvokeEvents(MakeGenericControllerAxisKey(InputSourceType::XInput, index, i),
+                                   invert ? (new_value * -1.0f) : new_value,
+                                   s_xinput_generic_binding_axis_mapping[i][BoolToUInt8(new_value >= 0)]);
+      }
+    }
+
+    for (u32 i = 0; i < NUM_BUTTONS; i++)
+    {
+      const float old_value = (cd.last_state.scp_extn.*s_scp_button_fields[i]);
+      const float new_value = (new_state.scp_extn.*s_scp_button_fields[i]);
+      if (old_value != new_value)
+      {
+        const GenericInputBinding generic_key = s_xinput_generic_binding_button_mapping[i];
+        InputManager::InvokeEvents(MakeGenericControllerButtonKey(InputSourceType::XInput, index, i), new_value,
                                    generic_key);
       }
     }
@@ -544,27 +657,45 @@ std::optional<float> XInputSource::GetCurrentValue(InputBindingKey key)
 
   if (key.source_subtype == InputSubclass::ControllerAxis && key.data < NUM_AXES)
   {
-    const XINPUT_GAMEPAD& state = cd.last_state.Gamepad;
+    if (!UseSCPExtn())
+    {
+      const XINPUT_GAMEPAD& state = cd.last_state.xinput.Gamepad;
 #define CHECK_AXIS(field, axis, min_value, max_value)                                                                  \
   case axis:                                                                                                           \
-    ret = static_cast<float>(state.field) / ((state.field < 0) ? min_value : max_value);
+    ret = static_cast<float>(state.field) / ((state.field < 0) ? min_value : max_value);                               \
+    break;
 
-    // Y axes is inverted in XInput when compared to SDL.
-    switch (key.data)
+      // Y axes is inverted in XInput when compared to SDL.
+      switch (key.data)
+      {
+        CHECK_AXIS(sThumbLX, AXIS_LEFTX, 32768, 32767);
+        CHECK_AXIS(sThumbLY, AXIS_LEFTY, -32768, -32767);
+        CHECK_AXIS(sThumbRX, AXIS_RIGHTX, 32768, 32767);
+        CHECK_AXIS(sThumbRY, AXIS_RIGHTY, -32768, -32767);
+        CHECK_AXIS(bLeftTrigger, AXIS_LEFTTRIGGER, 0, 255);
+        CHECK_AXIS(bRightTrigger, AXIS_RIGHTTRIGGER, 0, 255);
+      }
+    }
+    else
     {
-      CHECK_AXIS(sThumbLX, AXIS_LEFTX, 32768, 32767);
-      CHECK_AXIS(sThumbLY, AXIS_LEFTY, -32768, -32767);
-      CHECK_AXIS(sThumbRX, AXIS_RIGHTX, 32768, 32767);
-      CHECK_AXIS(sThumbRY, AXIS_RIGHTY, -32768, -32767);
-      CHECK_AXIS(bLeftTrigger, AXIS_LEFTTRIGGER, 0, 255);
-      CHECK_AXIS(bRightTrigger, AXIS_RIGHTTRIGGER, 0, 255);
+      const float value = (cd.last_state.scp_extn.*s_scp_axis_fields[key.data]);
+
+      // Y axes is inverted in XInput when compared to SDL.
+      ret = ((key.data == AXIS_LEFTY || key.data == AXIS_RIGHTY) ? (value * -1.0f) : value);
     }
   }
   else if (key.source_subtype == InputSubclass::ControllerButton && key.data < NUM_BUTTONS)
   {
-    const XINPUT_GAMEPAD& state = cd.last_state.Gamepad;
-    const u16 button_mask = s_button_masks[key.data];
-    ret = BoolToFloat((state.wButtons & button_mask) != 0);
+    if (!UseSCPExtn())
+    {
+      const XINPUT_GAMEPAD& state = cd.last_state.xinput.Gamepad;
+      const u16 button_mask = s_button_masks[key.data];
+      ret = BoolToFloat((state.wButtons & button_mask) != 0);
+    }
+    else
+    {
+      ret = (cd.last_state.scp_extn.*s_scp_button_fields[key.data]);
+    }
   }
 
   return ret;

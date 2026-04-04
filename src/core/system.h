@@ -404,7 +404,8 @@ std::vector<SaveStateInfo> GetAvailableSaveStates(std::string_view serial);
 std::optional<SaveStateInfo> GetSaveStateInfo(std::string_view serial, s32 slot);
 
 /// Returns save state info from opened save state stream.
-std::optional<ExtendedSaveStateInfo> GetExtendedSaveStateInfo(const char* path);
+std::optional<ExtendedSaveStateInfo> GetExtendedSaveStateInfo(const char* path, Error* error,
+                                                              bool* out_exists = nullptr);
 
 /// Deletes save states for the specified game code. If resume is set, the resume state is deleted too.
 void DeleteSaveStates(std::string_view serial, bool resume);
@@ -450,7 +451,7 @@ void RequestDisplaySize(float scale = 0.0f);
 DisplayAspectRatio GetConfigurationAspectRatio();
 
 /// Returns the path to a possible cover image for the current serial.
-std::string GetImageForLoadingScreen(const std::string& game_path);
+std::string GetImageForLoadingScreen(const std::string& game_path, bool fallback_to_achievement_game_icon = true);
 
 //////////////////////////////////////////////////////////////////////////
 // Memory Save States (Rewind and Runahead)

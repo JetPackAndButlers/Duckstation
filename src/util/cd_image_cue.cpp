@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2019-2025 Connor McLaughlin <stenzek@gmail.com>
+// SPDX-FileCopyrightText: 2019-2026 Connor McLaughlin <stenzek@gmail.com>
 // SPDX-License-Identifier: CC-BY-NC-ND-4.0
 
 #include "cd_image.h"
@@ -8,6 +8,7 @@
 
 #include "common/align.h"
 #include "common/assert.h"
+#include "common/bitutils.h"
 #include "common/error.h"
 #include "common/file_system.h"
 #include "common/log.h"
@@ -178,12 +179,12 @@ std::unique_ptr<TrackFileInterface> TrackFileInterface::OpenBinaryFile(const std
     FileSystem::OpenManagedSharedCFile(path.c_str(), "rb", FileSystem::FileShareMode::DenyWrite, error);
   if (!file)
   {
-    Error::AddPrefixFmt(error, "Failed to open '{}': ", FileSystem::GetDisplayNameFromPath(path));
+    Error::AddPrefixFmt(error, "Failed to open '{}': ", Path::GetFileName(path));
     return fi;
   }
 
   // Check for ECM format.
-  if (StringUtil::EndsWithNoCase(FileSystem::GetDisplayNameFromPath(path), ".ecm"))
+  if (StringUtil::EqualNoCase(Path::GetExtension(path), "ecm"))
     fi = ECMTrackFileInterface::Create(std::string(filename), std::move(file), error);
   else
     fi = std::make_unique<BinaryTrackFileInterface>(std::string(filename), std::move(file));

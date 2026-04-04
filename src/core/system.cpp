@@ -180,7 +180,7 @@ static void ClearRunningGame();
 static void DestroySystem();
 
 static void RecreateGPU(GPURenderer new_renderer);
-static std::string GetScreenshotPath(const char* extension);
+static std::string GetScreenshotPath(std::string_view extension);
 static bool StartMediaCapture(std::string path, bool capture_video, bool capture_audio, u32 video_width,
                               u32 video_height);
 static void StopMediaCapture(std::unique_ptr<MediaCapture> cap);
@@ -598,6 +598,12 @@ void System::SetCoreThreadHandle(Threading::ThreadHandle handle)
   s_state.core_thread_handle = std::move(handle);
 }
 
+bool Host::IsOnCoreThread()
+{
+  // This really doesn't belong here...
+  return System::GetCoreThreadHandle().IsCallingThread();
+}
+
 void System::IdlePollUpdate()
 {
   InputManager::PollSources();
@@ -884,7 +890,7 @@ bool System::IsDiscPath(std::string_view path)
           StringUtil::EndsWithNoCase(path, ".img") || StringUtil::EndsWithNoCase(path, ".iso") ||
           StringUtil::EndsWithNoCase(path, ".chd") || StringUtil::EndsWithNoCase(path, ".ecm") ||
           StringUtil::EndsWithNoCase(path, ".mds") || StringUtil::EndsWithNoCase(path, ".pbp") ||
-          StringUtil::EndsWithNoCase(path, ".m3u"));
+          StringUtil::EndsWithNoCase(path, ".ccd") || StringUtil::EndsWithNoCase(path, ".m3u"));
 }
 
 bool System::IsExePath(std::string_view path)
@@ -1014,7 +1020,7 @@ GameHash System::GetGameHashFromFile(const char* path)
   if (!data)
     return 0;
 
-  return GetGameHashFromBuffer(FileSystem::GetDisplayNameFromPath(path), data->cspan());
+  return GetGameHashFromBuffer(Path::GetFileName(path), data->cspan());
 }
 
 GameHash System::GetGameHashFromBuffer(const std::string_view path, const std::span<const u8> data)
@@ -1636,7 +1642,7 @@ bool System::UpdateGameSettingsLayer()
   if (new_interface)
   {
     if (!new_interface->GetBoolValue("ControllerPorts", "UseGameSettingsForController", false))
-      new_interface->GetStringValue("ControllerPorts", "InputProfileName", &input_profile_name);
+      input_profile_name = new_interface->GetStringValue("ControllerPorts", "InputProfileName");
   }
 
   if (!s_state.game_settings_interface && !new_interface && s_state.input_profile_name == input_profile_name)
@@ -3022,7 +3028,7 @@ size_t System::GetMaxSaveStateSize(bool enable_8mb_ram)
 
 size_t System::GetMaxMemorySaveStateSize(bool enable_8mb_ram, bool pgxp)
 {
-  return GetMaxSaveStateSize(enable_8mb_ram) + (pgxp ? CPU::PGXP::GetStateSize() : 0);
+  return GetMaxSaveStateSize(enable_8mb_ram) + (pgxp ? CPU::PGXP::GetStateSize(enable_8mb_ram) : 0);
 }
 
 std::string System::GetMediaPathFromSaveState(const char* path)
@@ -3256,6 +3262,7 @@ bool System::LoadStateBufferFromFile(SaveStateBuffer* buffer, std::FILE* fp, Err
     if (!ReadAndDecompressStateData(fp, buffer->screenshot.GetPixelsSpan(), header.offset_to_screenshot,
                                     compressed_size, compression_type, error)) [[unlikely]]
     {
+      Error::AddPrefix(error, "Failed to read screenshot: ");
       return false;
     }
   }
@@ -3269,6 +3276,7 @@ bool System::LoadStateBufferFromFile(SaveStateBuffer* buffer, std::FILE* fp, Err
                                     static_cast<SAVE_STATE_HEADER::CompressionType>(header.data_compression_type),
                                     error)) [[unlikely]]
     {
+      Error::AddPrefix(error, "Failed to read state data: ");
       return false;
     }
   }
@@ -4303,7 +4311,7 @@ void System::UpdateRunningGame(const std::string& path, CDImage* image, bool boo
     if (IsExePath(path))
     {
       if (s_state.running_game_title.empty())
-        s_state.running_game_title = Path::GetFileTitle(FileSystem::GetDisplayNameFromPath(path));
+        s_state.running_game_title = Path::GetFileTitle(path);
 
       s_state.running_game_hash = GetGameHashFromFile(s_state.running_game_path.c_str());
       if (s_state.running_game_hash != 0 && s_state.running_game_serial.empty())
@@ -4368,14 +4376,14 @@ void System::UpdateRunningGame(const std::string& path, CDImage* image, bool boo
 
           // Don't display device names for unknown physical discs.
           if (s_state.running_game_title.empty() && !CDImage::IsDeviceName(path.c_str()))
-            s_state.running_game_title = Path::GetFileTitle(FileSystem::GetDisplayNameFromPath(path));
+            s_state.running_game_title = Path::GetFileTitle(path);
         }
       }
       else
       {
         // Audio CDs can get the path from the filename, assuming it's not a physical disc.
         if (!CDImage::IsDeviceName(path.c_str()))
-          s_state.running_game_title = Path::GetFileTitle(FileSystem::GetDisplayNameFromPath(path));
+          s_state.running_game_title = Path::GetFileTitle(path);
       }
     }
   }
@@ -4515,7 +4523,7 @@ bool System::SwitchMediaSubImage(u32 index)
     const DiscRegion region =
       GameList::GetCustomRegionForPath(image->GetPath()).value_or(GetRegionForImage(image.get()));
     subimage_title = image->GetSubImageTitle(index);
-    title = FileSystem::GetDisplayNameFromPath(image->GetPath());
+    title = Path::GetFileName(image->GetPath());
     UpdateRunningGame(image->GetPath(), image.get(), false);
     okay = CDROM::InsertMedia(image, region, s_state.running_game_serial, s_state.running_game_title,
                               GetCurrentGameSaveTitle(), &error);
@@ -4524,8 +4532,7 @@ bool System::SwitchMediaSubImage(u32 index)
   {
     Host::AddIconOSDMessage(OSDMessageType::Error, "MediaSwitchSubImage", ICON_FA_COMPACT_DISC,
                             fmt::format(TRANSLATE_FS("System", "Failed to switch to subimage {} in '{}': {}."),
-                                        index + 1u, FileSystem::GetDisplayNameFromPath(image->GetPath()),
-                                        error.GetDescription()));
+                                        index + 1u, Path::GetFileName(image->GetPath()), error.GetDescription()));
 
     // restore old disc
     const DiscRegion region =
@@ -4773,15 +4780,12 @@ void System::CheckForSettingsChanges(const Settings& old_settings)
              g_settings.display_alignment != old_settings.display_alignment ||
              g_settings.display_rotation != old_settings.display_rotation ||
              g_settings.display_deinterlacing_mode != old_settings.display_deinterlacing_mode ||
-             g_settings.display_osd_scale != old_settings.display_osd_scale ||
-             g_settings.display_osd_margin != old_settings.display_osd_margin ||
-             g_settings.display_osd_message_duration != old_settings.display_osd_message_duration ||
-             g_settings.display_osd_message_location != old_settings.display_osd_message_location ||
              g_settings.gpu_pgxp_enable != old_settings.gpu_pgxp_enable ||
              g_settings.gpu_pgxp_texture_correction != old_settings.gpu_pgxp_texture_correction ||
              g_settings.gpu_pgxp_color_correction != old_settings.gpu_pgxp_color_correction ||
              g_settings.gpu_pgxp_depth_buffer != old_settings.gpu_pgxp_depth_buffer ||
              g_settings.gpu_pgxp_vertex_cache != old_settings.gpu_pgxp_vertex_cache ||
+             g_settings.gpu_pgxp_depth_clear_threshold != old_settings.gpu_pgxp_depth_clear_threshold ||
              g_settings.display_active_start_offset != old_settings.display_active_start_offset ||
              g_settings.display_active_end_offset != old_settings.display_active_end_offset ||
              g_settings.display_line_start_offset != old_settings.display_line_start_offset ||
@@ -4817,6 +4821,8 @@ void System::CheckForSettingsChanges(const Settings& old_settings)
     }
     else if (const bool device_settings_changed = g_settings.AreGPUDeviceSettingsChanged(old_settings);
              device_settings_changed || g_settings.display_show_messages != old_settings.display_show_messages ||
+             g_settings.display_animate_messages != old_settings.display_animate_messages ||
+             g_settings.display_blur_message_backgrounds != old_settings.display_blur_message_backgrounds ||
              g_settings.display_show_fps != old_settings.display_show_fps ||
              g_settings.display_show_speed != old_settings.display_show_speed ||
              g_settings.display_show_gpu_stats != old_settings.display_show_gpu_stats ||
@@ -4833,7 +4839,15 @@ void System::CheckForSettingsChanges(const Settings& old_settings)
              g_settings.display_screenshot_mode != old_settings.display_screenshot_mode ||
              g_settings.display_screenshot_format != old_settings.display_screenshot_format ||
              g_settings.display_screenshot_quality != old_settings.display_screenshot_quality ||
-             g_settings.gpu_pgxp_depth_clear_threshold != old_settings.gpu_pgxp_depth_clear_threshold)
+             g_settings.display_osd_scale != old_settings.display_osd_scale ||
+             g_settings.display_osd_margin != old_settings.display_osd_margin ||
+             g_settings.display_osd_message_duration != old_settings.display_osd_message_duration ||
+             g_settings.display_osd_message_location != old_settings.display_osd_message_location ||
+             g_settings.achievements_notification_location != old_settings.achievements_notification_location ||
+             g_settings.achievements_indicator_location != old_settings.achievements_indicator_location ||
+             g_settings.achievements_challenge_indicator_mode != old_settings.achievements_challenge_indicator_mode ||
+             g_settings.achievements_notification_scale != old_settings.achievements_notification_scale ||
+             g_settings.achievements_indicator_scale != old_settings.achievements_indicator_scale)
     {
       if (device_settings_changed)
       {
@@ -5611,7 +5625,7 @@ void System::UpdateVolume()
   SPU::GetOutputStream().SetOutputVolume(GetAudioOutputVolume());
 }
 
-std::string System::GetScreenshotPath(const char* extension)
+std::string System::GetScreenshotPath(std::string_view extension)
 {
   const std::string sanitized_name = Path::SanitizeFileName(System::GetGameTitle());
   std::string basename;
@@ -5898,21 +5912,22 @@ std::optional<SaveStateInfo> System::GetSaveStateInfo(std::string_view serial, s
   return SaveStateInfo{std::move(path), sd.ModificationTime, slot, global};
 }
 
-std::optional<ExtendedSaveStateInfo> System::GetExtendedSaveStateInfo(const char* path)
+std::optional<ExtendedSaveStateInfo> System::GetExtendedSaveStateInfo(const char* path, Error* error,
+                                                                      bool* out_exists /*= nullptr*/)
 {
   std::optional<ExtendedSaveStateInfo> ssi;
 
   FlushSaveStates();
 
-  Error error;
-  auto fp = FileSystem::OpenManagedCFile(path, "rb", &error);
+  const auto fp = FileSystem::OpenManagedCFile(path, "rb", error);
+  if (out_exists)
+    *out_exists = static_cast<bool>(fp);
   if (fp)
   {
-    ssi.emplace();
-
     SaveStateBuffer buffer;
-    if (LoadStateBufferFromFile(&buffer, fp.get(), &error, true, true, true, false)) [[likely]]
+    if (LoadStateBufferFromFile(&buffer, fp.get(), error, true, true, true, false)) [[likely]]
     {
+      ssi.emplace();
       ssi->title = std::move(buffer.title);
       ssi->serial = std::move(buffer.serial);
       ssi->media_path = std::move(buffer.media_path);
@@ -5920,11 +5935,6 @@ std::optional<ExtendedSaveStateInfo> System::GetExtendedSaveStateInfo(const char
 
       FILESYSTEM_STAT_DATA sd;
       ssi->timestamp = FileSystem::StatFile(fp.get(), &sd) ? sd.ModificationTime : 0;
-    }
-    else
-    {
-      ssi->title = error.GetDescription();
-      ssi->timestamp = 0;
     }
   }
 
@@ -6029,8 +6039,7 @@ std::string System::GetGameMemoryCardPath(std::string_view custom_title, std::st
 
     case MemoryCardType::PerGameFileTitle:
     {
-      ret = g_settings.GetGameMemoryCardPath(
-        Path::SanitizeFileName(Path::GetFileTitle(FileSystem::GetDisplayNameFromPath(path))), slot);
+      ret = g_settings.GetGameMemoryCardPath(Path::SanitizeFileName(Path::GetFileTitle(path)), slot);
     }
     break;
     default:
@@ -6120,8 +6129,7 @@ std::string System::GetMemoryCardPathForSlot(u32 slot, MemoryCardType type)
 
     case MemoryCardType::PerGameFileTitle:
     {
-      const std::string display_name(FileSystem::GetDisplayNameFromPath(s_state.running_game_path));
-      const std::string_view file_title(Path::GetFileTitle(display_name));
+      const std::string_view file_title(Path::GetFileTitle(s_state.running_game_path));
       if (file_title.empty())
       {
         Host::AddIconOSDMessage(OSDMessageType::Info, std::move(message_key), ICON_PF_MEMORY_CARD,
@@ -6355,20 +6363,27 @@ bool System::ChangeGPUDump(std::string new_path)
   return true;
 }
 
-std::string System::GetImageForLoadingScreen(const std::string& game_path)
+std::string System::GetImageForLoadingScreen(const std::string& game_path,
+                                             bool fallback_to_achievement_game_icon /*= true*/)
 {
-  std::string ret;
-
   const auto lock = GameList::GetLock();
   const GameList::Entry* entry = GameList::GetEntryForPath(game_path);
 
   if (entry)
-    ret = GameList::GetCoverImagePathForEntry(entry);
+  {
+    std::string path = GameList::GetCoverImagePathForEntry(entry);
+    if (!path.empty())
+      return path;
 
-  if (ret.empty())
-    ret = ImGuiManager::LOGO_IMAGE_NAME;
+    if (fallback_to_achievement_game_icon && entry->achievements_game_id != 0)
+    {
+      path = GameList::GetAchievementGameBadgePath(entry->achievements_game_id);
+      if (!path.empty())
+        return path;
+    }
+  }
 
-  return ret;
+  return ImGuiManager::LOGO_IMAGE_NAME;
 }
 
 void System::UpdateSessionTime(const std::string& prev_serial)

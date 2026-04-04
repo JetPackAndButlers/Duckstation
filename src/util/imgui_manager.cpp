@@ -159,6 +159,7 @@ struct ALIGN_TO_CACHE_LINE State
 
   // we maintain a second copy of the stick state here so we can map it to the dpad
   std::array<s8, 2> left_stick_axis_state = {};
+  InputManager::GamepadButtonType gamepad_button_type = InputManager::GamepadButtonType::Unknown;
   bool swap_gamepad_face_buttons = false;
 
   std::unique_ptr<GPUPipeline> imgui_pipeline;
@@ -210,6 +211,7 @@ bool ImGuiManager::Initialize(Error* error)
 
   s_state.global_scale = std::max((main_swap_chain ? main_swap_chain->GetScale() : 1.0f) * GetGlobalPrescale(), 1.0f);
   s_state.scale_changed = false;
+  s_state.gamepad_button_type = InputManager::GetLastGamepadButtonType();
 
   s_state.imgui_context = ImGui::CreateContext();
 
@@ -528,13 +530,11 @@ void ImGuiManager::RenderDrawLists(u32 window_width, u32 window_height, WindowIn
         clip = g_gpu_device->FlipToLowerLeft(clip, post_rotated_height);
 
       g_gpu_device->SetScissor(clip);
-      g_gpu_device->SetTextureSampler(0, reinterpret_cast<GPUTexture*>(pcmd->GetTexID()),
-                                      g_gpu_device->GetLinearSampler());
+      g_gpu_device->SetTextureSampler(0, pcmd->GetTexID(), g_gpu_device->GetLinearSampler());
 
       if (pcmd->UserCallback) [[unlikely]]
       {
-        pcmd->UserCallback(cmd_list, pcmd);
-        g_gpu_device->UploadUniformBuffer(&mproj, sizeof(mproj));
+        pcmd->UserCallback(cmd_list, pcmd, base_vertex, base_index);
         g_gpu_device->SetPipeline(s_state.imgui_pipeline.get());
       }
       else
@@ -576,6 +576,7 @@ void ImGuiManager::UpdateTextures()
           continue;
         }
 
+        gtex->MakeReadyForSampling();
         tex->SetTexID(reinterpret_cast<ImTextureID>(gtex.release()));
         tex->Status = ImTextureStatus_OK;
       }
@@ -594,6 +595,8 @@ void ImGuiManager::UpdateTextures()
             continue;
           }
         }
+
+        gtex->MakeReadyForSampling();
 
         // Updates is cleared by ImGui NewFrame.
         tex->Status = ImTextureStatus_OK;
@@ -872,6 +875,8 @@ void ImGuiManager::ReloadFontDataIfActive()
 float ImGuiManager::GetOSDMessageDuration(OSDMessageType type)
 {
   DebugAssert(type < OSDMessageType::MaxCount);
+  if (type >= OSDMessageType::Persistent) [[unlikely]]
+    return std::numeric_limits<float>::max();
   return g_gpu_settings.display_osd_message_duration[static_cast<size_t>(type)];
 }
 
@@ -1069,6 +1074,8 @@ void ImGuiManager::DrawOSDMessages(Timer::Value current_time)
   const float max_width_for_color = std::ceil(400.0f * scale);
   const float min_rounded_width = rounding * 2.0f;
   const bool show_messages = g_gpu_settings.display_show_messages;
+  const bool blur_background = g_gpu_settings.display_blur_message_backgrounds && !FullscreenUI::HasActiveWindow() &&
+                               FullscreenUI::CanBlurBackground();
 
   const ImVec4 left_background_color = DarkerColor(UIStyle.ToastBackgroundColor, 1.3f);
   const ImVec4 right_background_color = DarkerColor(UIStyle.ToastBackgroundColor, 0.8f);
@@ -1172,14 +1179,22 @@ void ImGuiManager::DrawOSDMessages(Timer::Value current_time)
 
     ImDrawList* const dl = ImGui::GetForegroundDrawList();
 
-    const float background_opacity = opacity * 0.95f;
-    DrawRoundedGradientRect(
-      dl, pos, pos_max, ImGui::GetColorU32(ModAlpha(left_background_color, background_opacity)),
-      ImGui::GetColorU32(
-        ModAlpha(ImLerp(left_background_color, right_background_color,
-                        std::min((box_width - min_rounded_width) / (max_width_for_color - min_rounded_width), 1.0f)),
-                 background_opacity)),
-      rounding);
+    if (blur_background && FullscreenUI::BeginBlurBackground(dl, pos, pos_max))
+    {
+      dl->AddRectFilled(pos, pos_max, ImGui::GetColorU32(ModAlpha(left_background_color, opacity)), rounding);
+      FullscreenUI::EndBlurBackground(dl);
+    }
+    else
+    {
+      const float background_opacity = opacity * 0.95f;
+      DrawRoundedGradientRect(
+        dl, pos, pos_max, ImGui::GetColorU32(ModAlpha(left_background_color, background_opacity)),
+        ImGui::GetColorU32(
+          ModAlpha(ImLerp(left_background_color, right_background_color,
+                          std::min((box_width - min_rounded_width) / (max_width_for_color - min_rounded_width), 1.0f)),
+                   background_opacity)),
+        rounding);
+    }
 
     const ImVec2 base_pos = ImVec2(pos.x + padding, pos.y + padding);
     const ImU32 color = ImGui::GetColorU32(ModAlpha(text_color, opacity));
@@ -1321,6 +1336,22 @@ bool ImGuiManager::AreGamepadFaceButtonsSwapped()
 void ImGuiManager::SetGamepadFaceButtonsSwapped(bool enabled)
 {
   s_state.swap_gamepad_face_buttons = enabled;
+}
+
+InputManager::GamepadButtonType ImGuiManager::GetGamepadButtonType()
+{
+  return s_state.gamepad_button_type;
+}
+
+void ImGuiManager::SetGamepadButtonType(InputManager::GamepadButtonType type)
+{
+  VideoThread::RunOnThread([type]() {
+    if (type == s_state.gamepad_button_type)
+      return;
+
+    s_state.gamepad_button_type = type;
+    FullscreenUI::UpdateWidgetsSettings();
+  });
 }
 
 bool ImGuiManager::WantsTextInput()
@@ -1961,8 +1992,8 @@ bool ImGuiManager::RenderAuxiliaryRenderWindow(AuxiliaryRenderWindowState* state
 
   CreateDrawLists();
 
-  const GPUDevice::PresentResult pres = g_gpu_device->BeginPresent(state->swap_chain.get());
-  if (pres == GPUDevice::PresentResult::OK)
+  const GPUPresentResult pres = g_gpu_device->BeginPresent(state->swap_chain.get());
+  if (pres == GPUPresentResult::OK)
   {
     RenderDrawLists(state->swap_chain.get());
     g_gpu_device->EndPresent(state->swap_chain.get(), false);

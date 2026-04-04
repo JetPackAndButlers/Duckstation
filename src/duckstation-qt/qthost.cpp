@@ -81,6 +81,7 @@
 #include <memory>
 
 #ifdef _WIN32
+#include "common/windows_headers.h"
 #include <objbase.h> // CoInitializeEx
 #endif
 
@@ -696,7 +697,7 @@ bool QtHost::SaveGameSettings(SettingsInterface* sif, bool delete_if_empty)
   // see above
   const auto lock = Core::GetSettingsLock();
 
-  if (!ini->Save(&error))
+  if (!ini->Save(&error, Settings::GetSectionSaveOrder()))
   {
     Host::ReportErrorAsync(
       TRANSLATE_SV("QtHost", "Error"),
@@ -2367,6 +2368,7 @@ void Host::ConfirmMessageAsync(std::string_view title, std::string_view message,
         callback(result);
       };
 
+      FullscreenUI::Initialize();
       FullscreenUI::OpenConfirmMessageDialog(ICON_EMOJI_QUESTION_MARK, std::move(title), std::move(message),
                                              std::move(final_callback), fmt::format(ICON_FA_CHECK " {}", yes_text),
                                              fmt::format(ICON_FA_XMARK " {}", no_text));
@@ -2800,7 +2802,7 @@ QString InputDeviceListModel::getDeviceName(const InputBindingKey& key)
 
 bool InputDeviceListModel::hasEffectsOfType(InputBindingInfo::Type type)
 {
-  return std::ranges::any_of(m_effects, [type](const auto& eff) { return eff.first == type; });
+  return std::ranges::any_of(m_effects, [type](const auto& eff) { return (eff.type == type); });
 }
 
 int InputDeviceListModel::rowCount(const QModelIndex& parent /*= QModelIndex()*/) const
@@ -2856,7 +2858,12 @@ void InputDeviceListModel::enumerateDevices()
   EffectList new_effects;
   new_effects.reserve(effects.size());
   for (const auto& [type, key] : effects)
-    new_effects.emplace_back(type, key);
+  {
+    TinyString name = InputManager::ConvertInputBindingKeyToString(type, key);
+    SmallString pretty_name(name);
+    InputManager::PrettifyInputBinding(pretty_name, false);
+    new_effects.emplace_back(type, key, std::string(name), std::string(pretty_name));
+  }
 
   QMetaObject::invokeMethod(this, &InputDeviceListModel::resetLists, Qt::QueuedConnection, new_devices, new_effects);
 }
@@ -2903,7 +2910,7 @@ void InputDeviceListModel::onDeviceDisconnected(const InputBindingKey& key, cons
       const QString effect_prefix = QStringLiteral("%1/").arg(identifier);
       for (qsizetype j = 0; j < m_effects.size();)
       {
-        if (m_effects[j].second.source_type == key.source_type && m_effects[j].second.source_index == key.source_index)
+        if (m_effects[j].key.source_type == key.source_type && m_effects[j].key.source_index == key.source_index)
           m_effects.remove(j);
         else
           j++;
@@ -2923,7 +2930,12 @@ void Host::OnInputDeviceConnected(InputBindingKey key, std::string_view identifi
   {
     qeffect_list.reserve(effect_list.size());
     for (const auto& [eff_type, eff_key] : effect_list)
-      qeffect_list.emplace_back(eff_type, eff_key);
+    {
+      TinyString name = InputManager::ConvertInputBindingKeyToString(eff_type, eff_key);
+      SmallString pretty_name(name);
+      InputManager::PrettifyInputBinding(pretty_name, false);
+      qeffect_list.emplace_back(eff_type, eff_key, std::string(name), std::string(pretty_name));
+    }
   }
 
   QMetaObject::invokeMethod(g_core_thread->getInputDeviceListModel(), &InputDeviceListModel::onDeviceConnected,
@@ -2952,6 +2964,42 @@ std::string QtHost::GetResourcePath(std::string_view filename, bool allow_overri
 QString QtHost::GetResourceQPath(std::string_view name, bool allow_override)
 {
   return QString::fromStdString(GetResourcePath(name, allow_override));
+}
+
+std::optional<std::string> QtHost::ReadResourceFileToString(std::string_view name, bool allow_override, Error* error)
+{
+  if (allow_override)
+  {
+    const std::string respath = Path::Combine(EmuFolders::UserResources, name.starts_with(":") ? name.substr(1) : name);
+    if (std::optional<std::string> ret = FileSystem::ReadFileToString(respath.c_str(), error))
+      return ret;
+  }
+
+  if (!name.starts_with(":"))
+  {
+    Error::SetStringFmt(error, "Failed to find resource file '{}'", name);
+    return std::nullopt;
+  }
+
+  QFile file(QtUtils::StringViewToQString(name));
+  s64 size;
+  if (!file.open(QIODevice::ReadOnly) || (size = file.size()) <= 0)
+  {
+    Error::SetStringFmt(error, "Failed to open resource file '{}': {}", name, file.errorString().toStdString());
+    return std::nullopt;
+  }
+
+  std::string ret;
+  ret.resize(static_cast<size_t>(size));
+
+  const s64 read_size = static_cast<s64>(ret.size());
+  if (read_size > 0 && file.read(ret.data(), read_size) != read_size)
+  {
+    Error::SetStringFmt(error, "Failed to read resource file '{}': {}", name, file.errorString().toStdString());
+    return std::nullopt;
+  }
+
+  return ret;
 }
 
 const QStringList& QtHost::GetRobotoFontFamilies()
@@ -3166,7 +3214,9 @@ void Host::OnMediaCaptureStopped()
 
 void Host::SetMouseMode(bool relative, bool hide_cursor)
 {
-  emit g_core_thread->mouseModeRequested(relative, hide_cursor);
+  // Disable double-click handling when mouse is bound.
+  const bool ignore_double_click = InputManager::HasAnyBindingsForKey(InputManager::MakePointerButtonKey(0, 0));
+  emit g_core_thread->mouseModeRequested(relative, hide_cursor, ignore_double_click);
 }
 
 void Host::PumpMessagesOnCoreThread()

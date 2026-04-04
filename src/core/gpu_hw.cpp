@@ -554,11 +554,21 @@ bool GPU_HW::UpdateSettings(const GPUSettings& old_settings, Error* error)
 
   if (m_resolution_scale != resolution_scale)
   {
+    // If the display is off, there won't be an internal resolution yet.
     const GSVector2i& video_size = VideoPresenter::GetVideoSize();
-    Host::AddIconOSDMessage(OSDMessageType::Info, "ResolutionScaleChanged", ICON_FA_PAINTBRUSH,
-                            fmt::format(TRANSLATE_FS("GPU_HW", "Internal resolution set to {0}x ({1}x{2})."),
-                                        resolution_scale, video_size.x * resolution_scale,
-                                        video_size.y * resolution_scale));
+    if (!video_size.eq(GSVector2i::zero()))
+    {
+      const GSVector2i scaled_video_size = video_size.mul32l(GSVector2i(static_cast<s32>(resolution_scale)));
+      Host::AddIconOSDMessage(OSDMessageType::Info, "ResolutionScaleChanged", ICON_FA_PAINTBRUSH,
+                              fmt::format(TRANSLATE_FS("GPU_HW", "Internal resolution set to {0}x ({1}x{2})."),
+                                          resolution_scale, scaled_video_size.x, scaled_video_size.y));
+    }
+    else
+    {
+      Host::AddIconOSDMessage(
+        OSDMessageType::Info, "ResolutionScaleChanged", ICON_FA_PAINTBRUSH,
+        fmt::format(TRANSLATE_FS("GPU_HW", "Internal resolution set to {0}x."), resolution_scale));
+    }
   }
 
   if (m_multisamples != multisamples || g_gpu_settings.gpu_per_sample_shading != old_settings.gpu_per_sample_shading)
@@ -3040,6 +3050,9 @@ ALWAYS_INLINE_RELEASE bool GPU_HW::BeginPolygonDraw(const GPUBackendDrawCommand*
       v2f = tv2f;
       min_pos_12 = tmin_pos_12;
       max_pos_12 = tmax_pos_12;
+      draw_rect_012 = GSVector4i(GSVector4(min_pos_12.min(v0f)).upld(GSVector4(max_pos_12.max(v0f))))
+                        .add32(GSVector4i::cxpr(0, 0, 1, 1));
+      clamped_draw_rect_012 = draw_rect_012.rintersect(m_clamped_drawing_area);
     }
     else
     {

@@ -6,6 +6,7 @@ add_library(common
   binary_reader_writer.h
   bitfield.h
   bitutils.h
+  bcdutils.h
   crash_handler.cpp
   crash_handler.h
   dimensional_array.h
@@ -45,6 +46,7 @@ add_library(common
   progress_callback.h
   ryml_helpers.h
   scoped_guard.h
+  settings_interface.cpp
   settings_interface.h
   sha1_digest.cpp
   sha1_digest.h

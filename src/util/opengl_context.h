@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "gpu_device.h"
 #include "window_info.h"
 
 #include "common/types.h"

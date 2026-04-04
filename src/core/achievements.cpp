@@ -41,6 +41,7 @@
 #include "util/cd_image.h"
 #include "util/http_downloader.h"
 #include "util/imgui_manager.h"
+#include "util/ini_settings_interface.h"
 #include "util/state_wrapper.h"
 
 #include "IconsEmoji.h"
@@ -128,12 +129,19 @@ static bool IdentifyGame(CDImage* image);
 static bool IdentifyCurrentGame();
 static void BeginLoadGame();
 static void UpdateGameSummary(bool update_progress_database);
+static void UpdateModeSettings(const Settings& old_config);
 static DynamicHeapArray<u8> SaveStateToBuffer();
 static void LoadStateFromBuffer(std::span<const u8> data, std::unique_lock<std::recursive_mutex>& lock);
 static bool SaveStateToBuffer(std::span<u8> data);
+static std::string GetAchievementBadgeURL(const rc_client_achievement_t* achievement, u32 image_type);
 static std::string GetImageURL(const char* image_name, u32 type);
 static std::string GetLocalImagePath(const std::string_view image_name, u32 type);
 static void DownloadImage(std::string url, std::string cache_path);
+static void PrefetchNextAchievementBadge();
+static void PrefetchNextAchievementBadge(const rc_client_achievement_t* const last_cheevo);
+static void PrefetchAllAchievementBadges();
+static void SendNextPrefetchBadgeRequest();
+static void ClearPrefetchBadgeRequests();
 
 static TinyString DecryptLoginToken(std::string_view encrypted_token, std::string_view username);
 static TinyString EncryptLoginToken(std::string_view token, std::string_view username);
@@ -202,6 +210,10 @@ static void BuildProgressDatabase(const rc_client_all_user_progress_t* allprog);
 static void UpdateProgressDatabase();
 static void ClearProgressDatabase();
 
+static std::string GetPinnedAchievementsPath(u32 game_id);
+static void LoadPinnedAchievements();
+static void SavePinnedAchievements();
+
 #ifdef RC_CLIENT_SUPPORTS_RAINTEGRATION
 
 static void BeginLoadRAIntegration();
@@ -230,6 +242,7 @@ struct State
   std::vector<LeaderboardTrackerIndicator> active_leaderboard_trackers;
   std::vector<ActiveChallengeIndicator> active_challenge_indicators;
   std::optional<AchievementProgressIndicator> active_progress_indicator;
+  std::vector<PinnedAchievementIndicator> pinned_achievement_indicators;
 
   rc_client_user_game_summary_t game_summary = {};
   u32 game_id = 0;
@@ -252,6 +265,8 @@ struct State
   rc_client_async_handle_t* fetch_all_progress_request = nullptr;
   rc_client_all_user_progress_t* fetch_all_progress_result = nullptr;
   rc_client_async_handle_t* refresh_all_progress_request = nullptr;
+
+  std::vector<std::pair<std::string, std::string>> prefetch_badge_requests; // (path, url)
 
 #ifdef RC_CLIENT_SUPPORTS_RAINTEGRATION
   rc_client_async_handle_t* load_raintegration_request = nullptr;
@@ -314,6 +329,11 @@ std::vector<Achievements::ActiveChallengeIndicator>& Achievements::GetActiveChal
 std::optional<Achievements::AchievementProgressIndicator>& Achievements::GetActiveProgressIndicator()
 {
   return s_state.active_progress_indicator;
+}
+
+std::vector<Achievements::PinnedAchievementIndicator>& Achievements::GetPinnedAchievementIndicators()
+{
+  return s_state.pinned_achievement_indicators;
 }
 
 void Achievements::ReportError(std::string_view sv)
@@ -455,6 +475,137 @@ void Achievements::DownloadImage(std::string url, std::string cache_path)
   };
 
   s_state.http_downloader->CreateRequest(std::move(url), std::move(callback));
+}
+
+void Achievements::PrefetchNextAchievementBadge()
+{
+  if (!HasAchievements())
+    return;
+
+  // Find most recent unlock.
+  rc_client_achievement_list_t* const achievements =
+    rc_client_create_achievement_list(Achievements::GetClient(), RC_CLIENT_ACHIEVEMENT_CATEGORY_CORE_AND_UNOFFICIAL,
+                                      RC_CLIENT_ACHIEVEMENT_LIST_GROUPING_PROGRESS);
+  const rc_client_achievement_t* most_recent_unlock = nullptr;
+  for (u32 i = 0; i < achievements->num_buckets; i++)
+  {
+    const rc_client_achievement_bucket_t& bucket = achievements->buckets[i];
+    if (bucket.bucket_type != RC_CLIENT_ACHIEVEMENT_BUCKET_UNLOCKED &&
+        bucket.bucket_type != RC_CLIENT_ACHIEVEMENT_BUCKET_RECENTLY_UNLOCKED)
+    {
+      continue;
+    }
+
+    for (u32 j = 0; j < bucket.num_achievements; j++)
+    {
+      const rc_client_achievement_t* const cheevo = bucket.achievements[j];
+      if (!most_recent_unlock || cheevo->unlock_time > most_recent_unlock->unlock_time)
+        most_recent_unlock = cheevo;
+    }
+  }
+  rc_client_destroy_achievement_list(achievements);
+
+  if (most_recent_unlock)
+    PrefetchNextAchievementBadge(most_recent_unlock);
+}
+
+void Achievements::PrefetchNextAchievementBadge(const rc_client_achievement_t* const last_cheevo)
+{
+  // Precache badge for the likely next achievement to avoid the badge load time.
+  const rc_client_achievement_t* const next_cheevo =
+    rc_client_get_next_achievement_info(s_state.client, last_cheevo, RC_CLIENT_ACHIEVEMENT_BUCKET_LOCKED);
+  if (!next_cheevo)
+    return;
+
+  VERBOSE_LOG("Prefetching badge for likely next achievement '{}' ({})", next_cheevo->title, next_cheevo->badge_url);
+  GetAchievementBadgePath(next_cheevo, false);
+}
+
+void Achievements::PrefetchAllAchievementBadges()
+{
+  static constexpr u32 PREFETCH_IMAGE_TYPE = RC_IMAGE_TYPE_ACHIEVEMENT;
+
+  // This is here so that we can hopefully avoid the delay in downloading the badge image on unlock.
+  if (!HasAchievements())
+    return;
+
+  rc_client_achievement_list_t* const achievements =
+    rc_client_create_achievement_list(Achievements::GetClient(), RC_CLIENT_ACHIEVEMENT_CATEGORY_CORE_AND_UNOFFICIAL,
+                                      RC_CLIENT_ACHIEVEMENT_LIST_GROUPING_LOCK_STATE);
+  if (!achievements)
+    return;
+
+  for (u32 i = 0; i < achievements->num_buckets; i++)
+  {
+    // Ignore unlocked achievements, since we're not going to be showing a notification for them.
+    const rc_client_achievement_bucket_t& bucket = achievements->buckets[i];
+    if (bucket.bucket_type != RC_CLIENT_ACHIEVEMENT_BUCKET_LOCKED)
+      continue;
+
+    for (u32 j = 0; j < bucket.num_achievements; j++)
+    {
+      const rc_client_achievement_t* const cheevo = bucket.achievements[j];
+      std::string path = GetLocalImagePath(cheevo->badge_name, PREFETCH_IMAGE_TYPE);
+      if (path.empty() || FileSystem::FileExists(path.c_str()))
+        continue;
+
+      std::string url = GetAchievementBadgeURL(cheevo, PREFETCH_IMAGE_TYPE);
+      VERBOSE_LOG("Prefetching badge for locked achievement '{}' ({})", cheevo->title, cheevo->badge_url);
+      s_state.prefetch_badge_requests.emplace_back(std::move(path), std::move(url));
+    }
+  }
+  rc_client_destroy_achievement_list(achievements);
+  if (s_state.prefetch_badge_requests.empty())
+    return;
+
+  // reverse the list, fetch the first achievement first since it's the most likely to be unlocked next
+  std::ranges::reverse(s_state.prefetch_badge_requests);
+  SendNextPrefetchBadgeRequest();
+}
+
+void Achievements::SendNextPrefetchBadgeRequest()
+{
+  if (s_state.prefetch_badge_requests.empty())
+    return;
+
+  std::string cache_path = std::move(s_state.prefetch_badge_requests.back().first);
+  std::string url = std::move(s_state.prefetch_badge_requests.back().second);
+  s_state.prefetch_badge_requests.pop_back();
+
+  // free memory when done
+  if (s_state.prefetch_badge_requests.empty())
+    s_state.prefetch_badge_requests = {};
+
+  auto callback = [cache_path = std::move(cache_path)](s32 status_code, const Error& error,
+                                                       const std::string& content_type,
+                                                       HTTPDownloader::Request::Data data) mutable {
+    if (status_code != HTTPDownloader::HTTP_STATUS_OK)
+    {
+      ERROR_LOG("Failed to download badge '{}': {}", Path::GetFileName(cache_path), error.GetDescription());
+      return;
+    }
+
+    Error write_error;
+    if (!FileSystem::WriteBinaryFile(cache_path.c_str(), data, &write_error))
+    {
+      ERROR_LOG("Failed to write badge image to '{}': {}", cache_path, write_error.GetDescription());
+      return;
+    }
+
+    VideoThread::RunOnThread(
+      [cache_path = std::move(cache_path)]() { FullscreenUI::InvalidateCachedTexture(cache_path); });
+
+    SendNextPrefetchBadgeRequest();
+  };
+
+  s_state.http_downloader->CreateRequest(std::move(url), std::move(callback));
+  if (!s_state.prefetch_badge_requests.empty())
+    VERBOSE_LOG("{} badge requests remaining", s_state.prefetch_badge_requests.size());
+}
+
+void Achievements::ClearPrefetchBadgeRequests()
+{
+  s_state.prefetch_badge_requests = {};
 }
 
 bool Achievements::IsActive()
@@ -701,29 +852,25 @@ void Achievements::UpdateSettings(const Settings& old_config)
   }
 
   auto lock = GetLock();
-  const bool encore_mode_changed = (g_settings.achievements_encore_mode != old_config.achievements_encore_mode);
-  const bool spectator_mode_changed =
-    (g_settings.achievements_spectator_mode != old_config.achievements_spectator_mode);
-  const bool unofficial_test_mode_changed =
-    (g_settings.achievements_unofficial_test_mode != old_config.achievements_unofficial_test_mode);
-
-  if (encore_mode_changed)
-    rc_client_set_encore_mode_enabled(s_state.client, g_settings.achievements_encore_mode);
-  if (spectator_mode_changed)
-    rc_client_set_spectator_mode_enabled(s_state.client, g_settings.achievements_spectator_mode);
-  if (unofficial_test_mode_changed)
-    rc_client_set_unofficial_enabled(s_state.client, g_settings.achievements_unofficial_test_mode);
 
   // If a game is active and these settings changed, reload the game to apply them.
   // Just unload and reload without destroying the client to preserve hardcore mode.
-  if (HasActiveGame() && (encore_mode_changed || spectator_mode_changed || unofficial_test_mode_changed))
+  // NOTE: Can't change spectator mode while game is loaded.
+  if (HasActiveGame() && (g_settings.achievements_encore_mode != old_config.achievements_encore_mode ||
+                          g_settings.achievements_spectator_mode != old_config.achievements_spectator_mode ||
+                          g_settings.achievements_unofficial_test_mode != old_config.achievements_unofficial_test_mode))
   {
     // Save and restore state to preserve progress.
     const DynamicHeapArray<u8> state_data = SaveStateToBuffer();
     ClearGameInfo();
+    UpdateModeSettings(old_config);
     BeginLoadGame();
     LoadStateFromBuffer(state_data.cspan(), lock);
     return;
+  }
+  else
+  {
+    UpdateModeSettings(old_config);
   }
 
   if (!g_settings.achievements_leaderboard_trackers)
@@ -731,6 +878,16 @@ void Achievements::UpdateSettings(const Settings& old_config)
 
   if (!g_settings.achievements_progress_indicators)
     s_state.active_progress_indicator.reset();
+}
+
+void Achievements::UpdateModeSettings(const Settings& old_config)
+{
+  if (g_settings.achievements_encore_mode != old_config.achievements_encore_mode)
+    rc_client_set_encore_mode_enabled(s_state.client, g_settings.achievements_encore_mode);
+  if (g_settings.achievements_spectator_mode != old_config.achievements_spectator_mode)
+    rc_client_set_spectator_mode_enabled(s_state.client, g_settings.achievements_spectator_mode);
+  if (g_settings.achievements_unofficial_test_mode != old_config.achievements_unofficial_test_mode)
+    rc_client_set_unofficial_enabled(s_state.client, g_settings.achievements_unofficial_test_mode);
 }
 
 void Achievements::Shutdown()
@@ -1077,6 +1234,8 @@ void Achievements::GameChanged(CDImage* image)
   if (!IdentifyGame(image))
     return;
 
+  ClearPrefetchBadgeRequests();
+
   // cancel previous requests
   if (s_state.load_game_request)
   {
@@ -1146,6 +1305,9 @@ void Achievements::BeginLoadGame()
     DisableHardcoreMode(false, false);
     return;
   }
+
+  // Clear prefetch requests, since if we're loading state we'll get blocked until they all download otherwise.
+  ClearPrefetchBadgeRequests();
 
   s_state.load_game_request = rc_client_begin_load_game(s_state.client, GameHashToString(s_state.game_hash).c_str(),
                                                         ClientLoadGameCallback, nullptr);
@@ -1242,16 +1404,31 @@ void Achievements::ClientLoadGameCallback(int result, const char* error_message,
   // update progress database on first load, in case it was played on another PC
   UpdateGameSummary(true);
 
+  // Defer starting the prefetch, because otherwise when loading state we'll block until it's all downloaded.
+  if (g_settings.achievements_prefetch_badges)
+    Host::RunOnCoreThread(&Achievements::PrefetchAllAchievementBadges);
+  else
+    PrefetchNextAchievementBadge();
+
   // needed for notifications
   SoundEffectManager::EnsureInitialized();
 
   if (display_summary)
     DisplayAchievementSummary();
+
+  LoadPinnedAchievements();
 }
 
 void Achievements::ClearGameInfo()
 {
   FullscreenUI::ClearAchievementsState();
+
+  ClearPrefetchBadgeRequests();
+
+  s_state.active_leaderboard_trackers = {};
+  s_state.active_challenge_indicators = {};
+  s_state.active_progress_indicator.reset();
+  s_state.pinned_achievement_indicators = {};
 
   if (s_state.load_game_request)
   {
@@ -1260,9 +1437,6 @@ void Achievements::ClearGameInfo()
   }
   rc_client_unload_game(s_state.client);
 
-  s_state.active_leaderboard_trackers = {};
-  s_state.active_challenge_indicators = {};
-  s_state.active_progress_indicator.reset();
   s_state.game_id = 0;
   s_state.game_title = {};
   s_state.game_icon = {};
@@ -1360,11 +1534,12 @@ void Achievements::HandleResetEvent(const rc_client_event_t* event)
 
 void Achievements::HandleUnlockEvent(const rc_client_event_t* event)
 {
-  const rc_client_achievement_t* cheevo = event->achievement;
+  const rc_client_achievement_t* const cheevo = event->achievement;
   DebugAssert(cheevo);
 
   INFO_LOG("Achievement {} ({}) for game {} unlocked", cheevo->id, cheevo->title, s_state.game_id);
   UpdateGameSummary(true);
+  SetAchievementPinned(cheevo->id, false);
 
   if (g_settings.achievements_notifications)
   {
@@ -1384,6 +1559,8 @@ void Achievements::HandleUnlockEvent(const rc_client_event_t* event)
       std::move(title), std::string(cheevo->description), std::move(note),
       (cheevo->points > 0) ? FullscreenUI::AchievementNotificationNoteType::Text :
                              FullscreenUI::AchievementNotificationNoteType::None);
+
+    PrefetchNextAchievementBadge(cheevo);
   }
 
   if (g_settings.achievements_sound_effects)
@@ -1660,6 +1837,13 @@ void Achievements::HandleAchievementProgressIndicatorShowEvent(const rc_client_e
   if (!g_settings.achievements_progress_indicators)
     return;
 
+  // Don't show pinned achievements.
+  if (IsAchievementPinned(event->achievement->id))
+  {
+    DEV_COLOR_LOG(StrongYellow, "Not showing progress indicator for pinned achievement {}", event->achievement->id);
+    return;
+  }
+
   if (!s_state.active_progress_indicator.has_value())
     s_state.active_progress_indicator.emplace();
 
@@ -1800,7 +1984,9 @@ void Achievements::LoadStateFromBuffer(std::span<const u8> data, std::unique_loc
   // before deserializing, otherwise that state's going to get lost.
   if (s_state.load_game_request)
   {
-    FullscreenUI::OpenOrUpdateLoadingScreen(System::GetImageForLoadingScreen(System::GetGamePath()),
+    // Fallback to game icon if we don't have a cover.
+    std::string image = System::GetImageForLoadingScreen(System::GetGamePath());
+    FullscreenUI::OpenOrUpdateLoadingScreen(image.empty() ? GetGameIconPath() : image,
                                             TRANSLATE_SV("Achievements", "Downloading achievements data..."));
 
     WaitForHTTPRequestsWithYield(lock);
@@ -1902,6 +2088,24 @@ bool Achievements::DoState(StateWrapper& sw)
   }
 }
 
+std::string Achievements::GetAchievementBadgeURL(const rc_client_achievement_t* achievement, u32 image_type)
+{
+  std::string url;
+  const char* url_ptr;
+
+  // RAIntegration doesn't set the URL fields.
+  if (IsUsingRAIntegration() ||
+      !(url_ptr =
+          (image_type == RC_IMAGE_TYPE_ACHIEVEMENT_LOCKED) ? achievement->badge_locked_url : achievement->badge_url))
+  {
+    return GetImageURL(achievement->badge_name, image_type);
+  }
+  else
+  {
+    return std::string(url_ptr);
+  }
+}
+
 std::string Achievements::GetAchievementBadgePath(const rc_client_achievement_t* achievement, bool locked,
                                                   bool download_if_missing)
 {
@@ -1909,19 +2113,16 @@ std::string Achievements::GetAchievementBadgePath(const rc_client_achievement_t*
   const std::string path = GetLocalImagePath(achievement->badge_name, image_type);
   if (download_if_missing && !path.empty() && !FileSystem::FileExists(path.c_str()))
   {
-    std::string url;
-    const char* url_ptr;
-
-    // RAIntegration doesn't set the URL fields.
-    if (IsUsingRAIntegration() || !(url_ptr = locked ? achievement->badge_locked_url : achievement->badge_url))
-      url = GetImageURL(achievement->badge_name, image_type);
-    else
-      url = std::string(url_ptr);
-
+    std::string url = GetAchievementBadgeURL(achievement, image_type);
     if (url.empty()) [[unlikely]]
-      ReportFmtError("Acheivement {} with badge name {} has no badge URL", achievement->id, achievement->badge_name);
+    {
+      ReportFmtError("Achievement {} with badge name {} has no badge URL", achievement->id, achievement->badge_name);
+    }
     else
-      DownloadImage(std::string(url), path);
+    {
+      DEV_LOG("Downloading badge for achievement {} from URL: {}", achievement->id, url);
+      DownloadImage(std::move(url), path);
+    }
   }
 
   return path;
@@ -3276,6 +3477,141 @@ const Achievements::ProgressDatabase::Entry* Achievements::ProgressDatabase::Loo
   const auto iter = std::lower_bound(m_entries.begin(), m_entries.end(), game_id,
                                      [](const Entry& entry, u32 search) { return (entry.game_id < search); });
   return (iter != m_entries.end() && iter->game_id == game_id) ? &(*iter) : nullptr;
+}
+
+std::string Achievements::GetPinnedAchievementsPath(u32 game_id)
+{
+  return Path::Combine(EmuFolders::GameSettings, fmt::format("{}_achievements.ini", game_id));
+}
+
+void Achievements::LoadPinnedAchievements()
+{
+  s_state.pinned_achievement_indicators = {};
+  if (!HasAchievements())
+    return;
+
+  const std::string path = GetPinnedAchievementsPath(s_state.game_id);
+  INISettingsInterface ini(path);
+  if (!ini.Load())
+    return;
+
+  const std::vector<std::string> ids = ini.GetStringList("PinnedAchievements", "AchievementID");
+  for (const std::string& id_str : ids)
+  {
+    const std::optional<u32> id = StringUtil::FromChars<u32>(id_str);
+    if (!id.has_value())
+    {
+      WARNING_LOG("Invalid pinned achievement ID '{}'", id_str);
+      continue;
+    }
+
+    const rc_client_achievement_t* achievement = rc_client_get_achievement_info(s_state.client, id.value());
+    if (!achievement)
+    {
+      WARNING_LOG("Pinned achievement {} not found in game", id.value());
+      continue;
+    }
+
+    if (achievement->state != RC_CLIENT_ACHIEVEMENT_STATE_ACTIVE)
+    {
+      WARNING_LOG("Pinned achievement {} is not unlocked, skipping", id.value());
+      continue;
+    }
+
+    PinnedAchievementIndicator indicator;
+    indicator.achievement_id = id.value();
+    indicator.badge_path = GetAchievementBadgePath(achievement, false);
+    s_state.pinned_achievement_indicators.push_back(std::move(indicator));
+  }
+
+  DEV_LOG("Loaded {} pinned achievements for game {}", s_state.pinned_achievement_indicators.size(), s_state.game_id);
+
+  // If there's nothing, clear out the file.
+  if (ids.size() != s_state.pinned_achievement_indicators.size())
+    SavePinnedAchievements();
+}
+
+void Achievements::SavePinnedAchievements()
+{
+  if (!HasAchievements())
+    return;
+
+  std::string path = GetPinnedAchievementsPath(s_state.game_id);
+
+  if (s_state.pinned_achievement_indicators.empty())
+  {
+    // Remove the file if there are no pinned achievements.
+    if (FileSystem::FileExists(path.c_str()))
+    {
+      Error error;
+      if (!FileSystem::DeleteFile(path.c_str(), &error))
+        ERROR_LOG("Failed to remove pinned achievements file: {}", error.GetDescription());
+    }
+
+    return;
+  }
+
+  INISettingsInterface ini(std::move(path));
+  ini.Load();
+
+  std::vector<std::string> ids;
+  ids.reserve(s_state.pinned_achievement_indicators.size());
+  for (const PinnedAchievementIndicator& indicator : s_state.pinned_achievement_indicators)
+    ids.push_back(StringUtil::ToChars(indicator.achievement_id));
+
+  ini.SetStringList("PinnedAchievements", "AchievementID", ids);
+
+  Error error;
+  if (!ini.Save(&error))
+    ERROR_LOG("Failed to save pinned achievements: {}", error.GetDescription());
+}
+
+bool Achievements::IsAchievementPinned(u32 achievement_id)
+{
+  return std::any_of(
+    s_state.pinned_achievement_indicators.begin(), s_state.pinned_achievement_indicators.end(),
+    [achievement_id](const PinnedAchievementIndicator& ind) { return ind.achievement_id == achievement_id; });
+}
+
+void Achievements::SetAchievementPinned(u32 achievement_id, bool pinned)
+{
+  const auto it = std::find_if(
+    s_state.pinned_achievement_indicators.begin(), s_state.pinned_achievement_indicators.end(),
+    [achievement_id](const PinnedAchievementIndicator& ind) { return ind.achievement_id == achievement_id; });
+
+  if ((it != s_state.pinned_achievement_indicators.end()) == pinned)
+    return;
+
+  if (it != s_state.pinned_achievement_indicators.end())
+  {
+    DEV_LOG("Unpinning achievement {}", achievement_id);
+    s_state.pinned_achievement_indicators.erase(it);
+  }
+  else
+  {
+    const rc_client_achievement_t* achievement = rc_client_get_achievement_info(s_state.client, achievement_id);
+    if (!achievement)
+    {
+      WARNING_LOG("Achievement {} not found", achievement_id);
+      return;
+    }
+
+    DEV_LOG("Pinning achievement {}", achievement_id);
+    PinnedAchievementIndicator indicator;
+    indicator.achievement_id = achievement_id;
+    indicator.badge_path = GetAchievementBadgePath(achievement, false);
+    s_state.pinned_achievement_indicators.push_back(std::move(indicator));
+
+    // Hide progress indicator if it was set
+    if (s_state.active_progress_indicator.has_value() &&
+        s_state.active_progress_indicator->achievement->id == achievement_id)
+    {
+      DEV_COLOR_LOG(StrongYellow, "Clearing progress indicator for achievement {} due to pin", achievement_id);
+      s_state.active_progress_indicator.reset();
+    }
+  }
+
+  SavePinnedAchievements();
 }
 
 #ifdef RC_CLIENT_SUPPORTS_RAINTEGRATION

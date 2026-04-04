@@ -105,12 +105,12 @@ static constexpr const char* DEFAULT_TOOLBAR_ACTIONS =
   "ControllerSettings";
 
 static constexpr char DISC_IMAGE_FILTER[] = QT_TRANSLATE_NOOP(
-  "MainWindow",
-  "All File Types (*.bin *.img *.iso *.cue *.chd *.cpe *.ecm *.mds *.pbp *.elf *.exe *.psexe *.ps-exe *.psx *.psf "
-  "*.minipsf *.m3u *.psxgpu);;Single-Track Raw Images (*.bin *.img *.iso);;Cue Sheets (*.cue);;MAME CHD Images "
-  "(*.chd);;Error Code Modeler Images (*.ecm);;Media Descriptor Sidecar Images (*.mds);;PlayStation EBOOTs (*.pbp "
-  "*.PBP);;PlayStation Executables (*.cpe *.elf *.exe *.psexe *.ps-exe, *.psx);;Portable Sound Format Files (*.psf "
-  "*.minipsf);;Playlists (*.m3u);;PSX GPU Dumps (*.psxgpu *.psxgpu.zst *.psxgpu.xz)");
+  "MainWindow", "All File Types (*.bin *.img *.iso *.cue *.chd *.cpe *.ecm *.mds *.pbp *.ccd *.elf *.exe *.psexe "
+                "*.ps-exe *.psx *.psf *.minipsf *.m3u *.psxgpu);;Single-Track Raw Images (*.bin *.img *.iso);;Cue "
+                "Sheets (*.cue);;MAME CHD Images (*.chd);;Error Code Modeler Images (*.ecm);;Media Descriptor Sidecar "
+                "Images (*.mds);;CloneCD Images (*.ccd);;PlayStation EBOOTs (*.pbp *.PBP);;PlayStation Executables "
+                "(*.cpe *.elf *.exe *.psexe *.ps-exe, *.psx);;Portable Sound Format Files (*.psf *.minipsf);;Playlists "
+                "(*.m3u);;PSX GPU Dumps (*.psxgpu *.psxgpu.zst *.psxgpu.xz)");
 
 static constexpr char IMAGE_FILTER[] = QT_TRANSLATE_NOOP("MainWindow", "Images (*.jpg *.jpeg *.png *.webp)");
 
@@ -493,6 +493,7 @@ void MainWindow::updateDisplayWidgetCursor()
 
   m_display_widget->updateRelativeMode(s_locals.system_valid && !s_locals.system_paused && m_relative_mouse_mode);
   m_display_widget->updateCursor(s_locals.system_valid && !s_locals.system_paused && shouldHideMouseCursor());
+  m_display_widget->setIgnoreDoubleClick(m_ignore_double_click);
 }
 
 void MainWindow::updateDisplayRelatedActions()
@@ -567,10 +568,11 @@ QWidget* MainWindow::getDisplayContainer() const
   return (m_display_container ? static_cast<QWidget*>(m_display_container) : static_cast<QWidget*>(m_display_widget));
 }
 
-void MainWindow::onMouseModeRequested(bool relative_mode, bool hide_cursor)
+void MainWindow::onMouseModeRequested(bool relative_mode, bool hide_cursor, bool ignore_double_click)
 {
   m_relative_mouse_mode = relative_mode;
   m_hide_mouse_cursor = hide_cursor;
+  m_ignore_double_click = ignore_double_click;
   updateDisplayWidgetCursor();
 }
 
@@ -1100,7 +1102,7 @@ std::shared_ptr<SystemBootParameters> MainWindow::getSystemBootParameters(std::s
   return ret;
 }
 
-bool MainWindow::openResumeStateDialog(const std::string& path, const std::string& serial)
+bool MainWindow::openResumeStateDialogForSerial(const std::string& path, const std::string& serial)
 {
   System::FlushSaveStates();
 
@@ -1108,17 +1110,57 @@ bool MainWindow::openResumeStateDialog(const std::string& path, const std::strin
   if (save_state_path.empty() || !FileSystem::FileExists(save_state_path.c_str()))
     return false;
 
-  return openResumeStateDialog(std::move(save_state_path));
+  return openResumeStateDialog(path, std::move(save_state_path));
 }
 
-bool MainWindow::openResumeStateDialog(std::string save_state_path)
+bool MainWindow::openResumeStateDialog(const std::string& path, std::string save_state_path)
 {
   if (s_locals.system_valid)
     return false;
 
-  std::optional<ExtendedSaveStateInfo> ssi = System::GetExtendedSaveStateInfo(save_state_path.c_str());
+  Error error;
+  bool exists;
+  std::optional<ExtendedSaveStateInfo> ssi = System::GetExtendedSaveStateInfo(save_state_path.c_str(), &error, &exists);
   if (!ssi.has_value())
-    return false;
+  {
+    // Can't delete and boot without a game path
+    if (!exists || path.empty())
+      return false;
+
+    QMessageBox* const msgbox = QtUtils::NewMessageBox(
+      this, QMessageBox::Critical, tr("Load Resume State"),
+      tr("A resume save state was found for this game, but it is corrupted and cannot be loaded:\n\n%1\n\n"
+         "Do you want to delete the save state and boot the game anyway?")
+        .arg(QString::fromStdString(error.GetDescription())),
+      QMessageBox::NoButton);
+
+    QPushButton* const boot = msgbox->addButton(tr("Fresh Boot"), QMessageBox::AcceptRole);
+    QPushButton* const delboot = msgbox->addButton(tr("Delete And Boot"), QMessageBox::AcceptRole);
+    msgbox->addButton(QMessageBox::Cancel);
+
+    connect(msgbox, &QMessageBox::finished, this,
+            [this, path, save_state_path = std::move(save_state_path), msgbox, boot, delboot]() mutable {
+              const QAbstractButton* const clicked = msgbox->clickedButton();
+              if (clicked == delboot)
+              {
+                if (!FileSystem::DeleteFile(save_state_path.c_str()))
+                {
+                  QtUtils::MessageBoxCritical(
+                    this, tr("Error"),
+                    tr("Failed to delete save state file '%1'.").arg(QString::fromStdString(save_state_path)));
+                }
+
+                startFile(std::move(path), std::nullopt, std::nullopt);
+              }
+              else if (clicked == boot)
+              {
+                startFile(std::move(path), std::nullopt, std::nullopt);
+              }
+            });
+
+    msgbox->open();
+    return true;
+  }
 
   QDialog* const dlg = new QDialog(this);
   dlg->setWindowTitle(tr("Load Resume State"));
@@ -1169,6 +1211,9 @@ bool MainWindow::openResumeStateDialog(std::string save_state_path)
     }
   }
 
+  // Prefer using the supplied path in case it's been moved.
+  std::string media_path = path.empty() ? std::string(std::move(ssi->media_path)) : std::string(path);
+
   QDialogButtonBox* const bbox = new QDialogButtonBox(Qt::Horizontal, dlg);
 
   QPushButton* const load = bbox->addButton(tr("Load State"), QDialogButtonBox::AcceptRole);
@@ -1177,16 +1222,16 @@ bool MainWindow::openResumeStateDialog(std::string save_state_path)
   QPushButton* const cancel = bbox->addButton(QDialogButtonBox::Cancel);
   load->setDefault(true);
 
-  connect(load, &QPushButton::clicked, [this, dlg, path = ssi->media_path, save_state_path]() mutable {
+  connect(load, &QPushButton::clicked, [this, dlg, path = media_path, save_state_path]() mutable {
     startFile(std::move(path), std::move(save_state_path), std::nullopt);
     dlg->accept();
   });
-  connect(boot, &QPushButton::clicked, [this, dlg, path = ssi->media_path]() mutable {
+  connect(boot, &QPushButton::clicked, [this, dlg, path = media_path]() mutable {
     startFile(std::move(path), std::nullopt, std::nullopt);
     dlg->accept();
   });
   connect(delboot, &QPushButton::clicked,
-          [this, dlg, path = ssi->media_path, save_state_path = std::move(save_state_path)]() mutable {
+          [this, dlg, path = std::move(media_path), save_state_path = std::move(save_state_path)]() mutable {
             if (!FileSystem::DeleteFile(save_state_path.c_str()))
             {
               QtUtils::MessageBoxCritical(
@@ -1227,7 +1272,7 @@ void MainWindow::startFileOrChangeDisc(const QString& qpath)
   {
     const auto lock = GameList::GetLock();
     const GameList::Entry* entry = GameList::GetEntryForPath(path);
-    if (entry && !entry->serial.empty() && openResumeStateDialog(entry->path, entry->serial))
+    if (entry && !entry->serial.empty() && openResumeStateDialogForSerial(entry->path, entry->serial))
       return;
   }
 
@@ -1290,7 +1335,7 @@ void MainWindow::onResumeLastStateActionTriggered()
     return;
   }
 
-  openResumeStateDialog(std::move(state_path));
+  openResumeStateDialog({}, std::move(state_path));
 }
 
 void MainWindow::onChangeDiscFromFileActionTriggered()
@@ -1583,7 +1628,7 @@ void MainWindow::onGameListEntryActivated()
     return;
   }
 
-  if (!entry->serial.empty() && openResumeStateDialog(entry->path, entry->serial))
+  if (!entry->serial.empty() && openResumeStateDialogForSerial(entry->path, entry->serial))
     return;
 
   // only resume if the option is enabled, and we have one for this game

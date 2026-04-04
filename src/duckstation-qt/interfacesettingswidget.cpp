@@ -18,44 +18,24 @@
 
 #include "moc_interfacesettingswidget.cpp"
 
-const char* InterfaceSettingsWidget::THEME_NAMES[] = {
-  QT_TRANSLATE_NOOP("MainWindow", "Native"),
+static constexpr const std::pair<const char*, const char*> BUILTIN_THEMES[] = {
+  {"", QT_TRANSLATE_NOOP("MainWindow", "Native")},
 #ifdef _WIN32
-  QT_TRANSLATE_NOOP("MainWindow", "Classic Windows"),
+  {"windowsvista", QT_TRANSLATE_NOOP("MainWindow", "Classic Windows")},
 #endif
-  QT_TRANSLATE_NOOP("MainWindow", "Fusion"),
-  QT_TRANSLATE_NOOP("MainWindow", "Dark Fusion (Gray)"),
-  QT_TRANSLATE_NOOP("MainWindow", "Dark Fusion (Blue)"),
-  QT_TRANSLATE_NOOP("MainWindow", "Darker Fusion"),
-  QT_TRANSLATE_NOOP("MainWindow", "AMOLED"),
-  QT_TRANSLATE_NOOP("MainWindow", "Cobalt Sky"),
-  QT_TRANSLATE_NOOP("MainWindow", "Grey Matter"),
-  QT_TRANSLATE_NOOP("MainWindow", "Green Giant"),
-  QT_TRANSLATE_NOOP("MainWindow", "Pinky Pals"),
-  QT_TRANSLATE_NOOP("MainWindow", "Dark Ruby"),
-  QT_TRANSLATE_NOOP("MainWindow", "Purple Rain"),
-  QT_TRANSLATE_NOOP("MainWindow", "QDarkStyle"),
-  nullptr,
-};
-
-const char* InterfaceSettingsWidget::THEME_VALUES[] = {
-  "",
-#ifdef _WIN32
-  "windowsvista",
-#endif
-  "fusion",
-  "darkfusion",
-  "darkfusionblue",
-  "darkerfusion",
-  "AMOLED",
-  "cobaltsky",
-  "greymatter",
-  "greengiant",
-  "pinkypals",
-  "darkruby",
-  "purplerain",
-  "qdarkstyle",
-  nullptr,
+  {"fusion", QT_TRANSLATE_NOOP("MainWindow", "Fusion")},
+  {"darkfusion", QT_TRANSLATE_NOOP("MainWindow", "Dark Fusion (Gray)")},
+  {"darkfusionblue", QT_TRANSLATE_NOOP("MainWindow", "Dark Fusion (Blue)")},
+  {"darkerfusion", QT_TRANSLATE_NOOP("MainWindow", "Darker Fusion")},
+  {"AMOLED", QT_TRANSLATE_NOOP("MainWindow", "AMOLED")},
+  {"cobaltsky", QT_TRANSLATE_NOOP("MainWindow", "Cobalt Sky")},
+  {"greymatter", QT_TRANSLATE_NOOP("MainWindow", "Grey Matter")},
+  {"greengiant", QT_TRANSLATE_NOOP("MainWindow", "Green Giant")},
+  {"pinkypals", QT_TRANSLATE_NOOP("MainWindow", "Pinky Pals")},
+  {"darkocean", QT_TRANSLATE_NOOP("MainWindow", "Dark Ocean")},
+  {"darkruby", QT_TRANSLATE_NOOP("MainWindow", "Dark Ruby")},
+  {"purplerain", QT_TRANSLATE_NOOP("MainWindow", "Purple Rain")},
+  {"qdarkstyle", QT_TRANSLATE_NOOP("MainWindow", "QDarkStyle")},
 };
 
 InterfaceSettingsWidget::InterfaceSettingsWidget(SettingsWindow* dialog, QWidget* parent)
@@ -93,27 +73,27 @@ InterfaceSettingsWidget::InterfaceSettingsWidget(SettingsWindow* dialog, QWidget
   connect(m_ui.hideMainWindow, &QCheckBox::checkStateChanged, this,
           &InterfaceSettingsWidget::updateRenderToSeparateWindowOptions);
 
+  int next_appearance_row = m_ui.appearanceLayout->rowCount();
+  int next_appearance_col = 0;
+
 #if defined(_WIN32)
   QCheckBox* const disable_window_rounded_corners =
     new QCheckBox(tr("Disable Window Rounded Corners"), m_ui.appearanceGroup);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, disable_window_rounded_corners, "Main",
                                                "DisableWindowRoundedCorners", false);
-  m_ui.appearanceLayout->addWidget(disable_window_rounded_corners, m_ui.appearanceLayout->rowCount(), 0, 1, 4);
+  m_ui.appearanceLayout->addWidget(disable_window_rounded_corners, next_appearance_row, next_appearance_col++ * 2, 1,
+                                   2);
 #elif defined(__APPLE__)
   QCheckBox* const use_fractional_window_scale = new QCheckBox(tr("Use Fractional Window Scale"), m_ui.appearanceGroup);
   SettingWidgetBinder::BindWidgetToBoolSetting(sif, use_fractional_window_scale, "Main", "UseFractionalWindowScale",
                                                false);
-  m_ui.appearanceLayout->addWidget(use_fractional_window_scale, m_ui.appearanceLayout->rowCount(), 0, 1, 4);
+  m_ui.appearanceLayout->addWidget(use_fractional_window_scale, next_appearance_row, next_appearance_col++ * 2, 1, 2);
 #endif
 
   if (!m_dialog->isPerGameSettings())
   {
-    SettingWidgetBinder::BindWidgetToEnumSetting(sif, m_ui.theme, "UI", "Theme", THEME_NAMES, THEME_VALUES,
-                                                 QtHost::GetDefaultThemeName(), "MainWindow");
-    connect(m_ui.theme, &QComboBox::currentIndexChanged, this, &QtHost::UpdateApplicationTheme);
-
-    populateLanguageDropdown(m_ui.language);
-    SettingWidgetBinder::BindWidgetToStringSetting(sif, m_ui.language, "Main", "Language", {});
+    setupThemeCombo(m_ui.theme);
+    setupLanguageCombo(m_ui.language);
     connect(m_ui.language, &QComboBox::currentIndexChanged, this, &InterfaceSettingsWidget::onLanguageChanged);
 
     // Annoyingly, have to match theme and language properties otherwise the sizes do not match.
@@ -123,7 +103,7 @@ InterfaceSettingsWidget::InterfaceSettingsWidget(SettingsWindow* dialog, QWidget
 #ifdef __linux__
     QCheckBox* const use_system_font = new QCheckBox(tr("Use System Font"), m_ui.appearanceGroup);
     SettingWidgetBinder::BindWidgetToBoolSetting(sif, use_system_font, "Main", "UseSystemFont", false);
-    m_ui.appearanceLayout->addWidget(use_system_font, m_ui.appearanceLayout->rowCount(), 0, 1, 4);
+    m_ui.appearanceLayout->addWidget(use_system_font, next_appearance_row, next_appearance_col++ * 2, 1, 2);
     connect(use_system_font, &QCheckBox::checkStateChanged, this, &QtHost::UpdateApplicationTheme,
             Qt::QueuedConnection);
     dialog->registerWidgetHelp(
@@ -131,6 +111,17 @@ InterfaceSettingsWidget::InterfaceSettingsWidget(SettingsWindow* dialog, QWidget
       tr("Uses the system font for the interface, instead of the bundled Roboto font. Enabling "
          "this option may cause some UI elements to not fit within windows."));
 #endif
+
+    m_disable_style_sheets = new QCheckBox(tr("Disable Style Sheets"), m_ui.appearanceGroup);
+    SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_disable_style_sheets, "Main", "DisableStylesheet", false);
+    connect(m_disable_style_sheets, &QCheckBox::checkStateChanged, this, &QtHost::UpdateApplicationTheme);
+    m_ui.appearanceLayout->addWidget(m_disable_style_sheets, next_appearance_row, next_appearance_col++ * 2, 1, 2);
+    dialog->registerWidgetHelp(m_disable_style_sheets, tr("Disable Style Sheets"), tr("Unchecked"),
+                               tr("Disables the use of style sheets in the application, reverting to the original "
+                                  "'Fusion' style but retaining the color scheme."));
+    connect(m_ui.theme, &QComboBox::currentIndexChanged, this,
+            &InterfaceSettingsWidget::updateDisableStyleSheetsEnabled);
+    updateDisableStyleSheetsEnabled();
 
     SettingWidgetBinder::BindWidgetToBoolSetting(sif, m_ui.autoUpdateEnabled, "AutoUpdater", "CheckAtStartup", true);
     for (const auto& [name, desc] : AutoUpdaterDialog::getChannelList())
@@ -224,11 +215,11 @@ InterfaceSettingsWidget::InterfaceSettingsWidget(SettingsWindow* dialog, QWidget
 
     const char* default_theme_cname = QtHost::GetDefaultThemeName();
     QString default_theme_name;
-    for (size_t i = 0; THEME_VALUES[i] != nullptr; ++i)
+    for (const auto& [name, display_name] : BUILTIN_THEMES)
     {
-      if (std::strcmp(THEME_VALUES[i], default_theme_cname) == 0)
+      if (std::strcmp(name, default_theme_cname) == 0)
       {
-        default_theme_name = tr(THEME_NAMES[i]);
+        default_theme_name = qApp->translate("MainWindow", display_name);
         break;
       }
     }
@@ -248,7 +239,7 @@ InterfaceSettingsWidget::InterfaceSettingsWidget(SettingsWindow* dialog, QWidget
 
 InterfaceSettingsWidget::~InterfaceSettingsWidget() = default;
 
-void InterfaceSettingsWidget::populateLanguageDropdown(QComboBox* cb)
+void InterfaceSettingsWidget::setupLanguageCombo(QComboBox* const cb)
 {
   const auto language_list = Host::GetAvailableLanguageList();
 
@@ -269,6 +260,22 @@ void InterfaceSettingsWidget::populateLanguageDropdown(QComboBox* cb)
     cb->addItem(QtUtils::GetIconForTranslationLanguage(code), QString::fromUtf8(Host::GetLanguageName(code)),
                 QString::fromLatin1(code));
   }
+
+  SettingWidgetBinder::BindWidgetToStringSetting(nullptr, cb, "Main", "Language", {});
+}
+
+void InterfaceSettingsWidget::setupThemeCombo(QComboBox* const cb)
+{
+  for (const auto& [name, display_name] : BUILTIN_THEMES)
+    cb->addItem(qApp->translate("MainWindow", display_name), QString::fromLatin1(name));
+  for (const QString& name : QtHost::GetCustomThemeList())
+  {
+    if (cb->findData(name) < 0)
+      cb->addItem(name, name);
+  }
+
+  SettingWidgetBinder::BindWidgetToStringSetting(nullptr, cb, "UI", "Theme", QtHost::GetDefaultThemeName());
+  connect(cb, QOverload<int>::of(&QComboBox::currentIndexChanged), cb, &QtHost::UpdateApplicationTheme);
 }
 
 void InterfaceSettingsWidget::updateRenderToSeparateWindowOptions()
@@ -283,6 +290,11 @@ void InterfaceSettingsWidget::onLanguageChanged()
 {
   QtHost::UpdateApplicationLanguage(this);
   g_main_window->recreate();
+}
+
+void InterfaceSettingsWidget::updateDisableStyleSheetsEnabled()
+{
+  m_disable_style_sheets->setEnabled(QtHost::IsStylesheetTheme(m_ui.theme->currentData().toString().toStdString()));
 }
 
 void InterfaceSettingsWidget::checkForUpdates()

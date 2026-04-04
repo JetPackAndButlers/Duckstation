@@ -471,10 +471,7 @@ public:
   ALWAYS_INLINE void SetRefreshRate(float refresh_rate) { m_window_info.surface_refresh_rate = refresh_rate; }
   ALWAYS_INLINE WindowInfoPrerotation GetPreRotation() const { return m_window_info.surface_prerotation; }
   ALWAYS_INLINE GPUTextureFormat GetFormat() const { return m_window_info.surface_format; }
-  ALWAYS_INLINE GSVector2i GetSizeVec() const
-  {
-    return GSVector2i(m_window_info.surface_width, m_window_info.surface_height);
-  }
+  ALWAYS_INLINE GSVector2i GetSizeVec() const { return GSVector2i::load32(&m_window_info.surface_width).u16to32(); }
   ALWAYS_INLINE GSVector2i GetPostRotatedSizeVec() const
   {
     return GSVector2i(m_window_info.GetPostRotatedWidth(), m_window_info.GetPostRotatedHeight());
@@ -530,14 +527,6 @@ public:
     None,
     One,
     Full
-  };
-
-  enum class PresentResult : u32
-  {
-    OK,
-    SkipPresent,
-    ExclusiveFullscreenLost,
-    DeviceLost,
   };
 
   struct Features
@@ -841,7 +830,7 @@ public:
                                          u32 push_constants_size) = 0;
 
   /// Returns false if the window was completely occluded.
-  virtual PresentResult BeginPresent(GPUSwapChain* swap_chain, u32 clear_color = DEFAULT_CLEAR_COLOR) = 0;
+  virtual GPUPresentResult BeginPresent(GPUSwapChain* swap_chain, u32 clear_color = DEFAULT_CLEAR_COLOR) = 0;
   virtual void EndPresent(GPUSwapChain* swap_chain, bool explicit_submit, u64 submit_time = 0) = 0;
   virtual void SubmitPresent(GPUSwapChain* swap_chain) = 0;
 

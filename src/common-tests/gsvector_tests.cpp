@@ -268,6 +268,13 @@ TEST(GSVector2iTest, ArithmeticWith16BitElements)
   EXPECT_EQ(mul16_result.S16[1], 12000);
   EXPECT_EQ(mul16_result.S16[2], 21000);
   EXPECT_EQ(mul16_result.S16[3], 32000);
+
+  // Test mul32l - low 32 bits of 32-bit multiplication
+  GSVector2i v3(100, -200);
+  GSVector2i v4(5, -10);
+  auto mul32l_result = v3.mul32l(v4);
+  EXPECT_EQ(mul32l_result.S32[0], 500);
+  EXPECT_EQ(mul32l_result.S32[1], 2000);
 }
 
 TEST(GSVector2iTest, ArithmeticWith8BitElements)
@@ -763,6 +770,17 @@ TEST(GSVector4iTest, Type64BitConversions)
   EXPECT_EQ(s8to64_result.S64[0], 0x12);
   EXPECT_EQ(s8to64_result.S64[1], 0x34);
 
+  // Test s16to64
+  auto s16to64_result = v1.s16to64();
+  EXPECT_EQ(s16to64_result.S64[0], 0x3412);
+  EXPECT_EQ(s16to64_result.S64[1], 0x7856);
+
+  // Test s16to64 with negative values
+  GSVector4i v_neg(s16t(0xFFFE), s16t(0x8000), 0, 0, 0, 0, 0, 0);
+  auto s16to64_neg = v_neg.s16to64();
+  EXPECT_EQ(s16to64_neg.S64[0], -2LL);
+  EXPECT_EQ(s16to64_neg.S64[1], -32768LL);
+
   // Test u16to64
   auto u16to64_result = v1.u16to64();
   EXPECT_EQ(u16to64_result.U64[0], 0x3412u); // Little endian 16-bit
@@ -772,6 +790,36 @@ TEST(GSVector4iTest, Type64BitConversions)
   auto s32to64_result = v1.s32to64();
   EXPECT_EQ(s32to64_result.S64[0], static_cast<s64>(0x0000000078563412LL));
   EXPECT_EQ(s32to64_result.S64[1], static_cast<s64>(0xFFFFFFFFF0DEBC9ALL));
+
+  // Test u8to64
+  auto u8to64_result = v1.u8to64();
+  EXPECT_EQ(u8to64_result.U64[0], 0x12u);
+  EXPECT_EQ(u8to64_result.U64[1], 0x34u);
+
+  // Test u32to64
+  auto u32to64_result = v1.u32to64();
+  EXPECT_EQ(u32to64_result.U64[0], 0x78563412u);
+  EXPECT_EQ(u32to64_result.U64[1], 0xF0DEBC9Au);
+}
+
+TEST(GSVector4iTest, Type32BitConversions)
+{
+  GSVector4i v1(s8t(0x12), s8t(0x34), s8t(0x56), s8t(0x78), s8t(0x9A), s8t(0xBC), s8t(0xDE), s8t(0xF0), s8t(0x11),
+                s8t(0x22), s8t(0x33), s8t(0x44), s8t(0x55), s8t(0x66), s8t(0x77), s8t(0x88));
+
+  // Test u8to32
+  auto u8to32_result = v1.u8to32();
+  EXPECT_EQ(u8to32_result.U32[0], 0x12u);
+  EXPECT_EQ(u8to32_result.U32[1], 0x34u);
+  EXPECT_EQ(u8to32_result.U32[2], 0x56u);
+  EXPECT_EQ(u8to32_result.U32[3], 0x78u);
+
+  // Test u16to32
+  auto u16to32_result = v1.u16to32();
+  EXPECT_EQ(u16to32_result.U32[0], 0x3412u);
+  EXPECT_EQ(u16to32_result.U32[1], 0x7856u);
+  EXPECT_EQ(u16to32_result.U32[2], 0xBC9Au);
+  EXPECT_EQ(u16to32_result.U32[3], 0xF0DEu);
 }
 
 TEST(GSVector4iTest, Shift64BitOperations)
@@ -840,6 +888,15 @@ TEST(GSVector4iTest, MultiplicationOperations)
     const s16 expected = static_cast<s16>((((v1.S16[i] * v2.S16[i]) >> 14) + 1) >> 1);
     EXPECT_EQ(mul16hrs_result.S16[i], expected);
   }
+
+  // Test mul32l - low 32 bits of 32-bit multiplication
+  GSVector4i v3(100, 200, -300, 400);
+  GSVector4i v4(5, -10, 15, -20);
+  auto mul32l_result = v3.mul32l(v4);
+  EXPECT_EQ(mul32l_result.S32[0], 500);
+  EXPECT_EQ(mul32l_result.S32[1], -2000);
+  EXPECT_EQ(mul32l_result.S32[2], -4500);
+  EXPECT_EQ(mul32l_result.S32[3], -8000);
 }
 
 TEST(GSVector4iTest, Eq64Operations)
@@ -1508,4 +1565,64 @@ TEST(GSVectorTest, Runion_IsCommutative)
   GSVector4 result2 = rect2.runion(rect1);
 
   EXPECT_TRUE(result1.eq(result2));
+}
+
+TEST(GSVector2Test, Blend32AllMasks)
+{
+  GSVector2 a(1.0f, 2.0f);
+  GSVector2 b(3.0f, 4.0f);
+
+  // mask=0b00: select all from a
+  auto r0 = a.blend32<0>(b);
+  EXPECT_FLOAT_EQ(r0.x, 1.0f);
+  EXPECT_FLOAT_EQ(r0.y, 2.0f);
+
+  // mask=0b01: select x from b, y from a
+  auto r1 = a.blend32<1>(b);
+  EXPECT_FLOAT_EQ(r1.x, 3.0f);
+  EXPECT_FLOAT_EQ(r1.y, 2.0f);
+
+  // mask=0b10: select x from a, y from b
+  auto r2 = a.blend32<2>(b);
+  EXPECT_FLOAT_EQ(r2.x, 1.0f);
+  EXPECT_FLOAT_EQ(r2.y, 4.0f);
+
+  // mask=0b11: select all from b
+  auto r3 = a.blend32<3>(b);
+  EXPECT_FLOAT_EQ(r3.x, 3.0f);
+  EXPECT_FLOAT_EQ(r3.y, 4.0f);
+}
+
+TEST(GSVector4Test, Blend32AllMasks)
+{
+  GSVector4 a(1.0f, 2.0f, 3.0f, 4.0f);
+  GSVector4 b(5.0f, 6.0f, 7.0f, 8.0f);
+
+  // mask=0b0000: select all from a
+  auto r0 = a.blend32<0>(b);
+  EXPECT_FLOAT_EQ(r0.x, 1.0f);
+  EXPECT_FLOAT_EQ(r0.y, 2.0f);
+  EXPECT_FLOAT_EQ(r0.z, 3.0f);
+  EXPECT_FLOAT_EQ(r0.w, 4.0f);
+
+  // mask=0b1111: select all from b
+  auto r15 = a.blend32<15>(b);
+  EXPECT_FLOAT_EQ(r15.x, 5.0f);
+  EXPECT_FLOAT_EQ(r15.y, 6.0f);
+  EXPECT_FLOAT_EQ(r15.z, 7.0f);
+  EXPECT_FLOAT_EQ(r15.w, 8.0f);
+
+  // mask=0b0101: select x,z from b; y,w from a
+  auto r5 = a.blend32<5>(b);
+  EXPECT_FLOAT_EQ(r5.x, 5.0f); // bit0=1 -> b
+  EXPECT_FLOAT_EQ(r5.y, 2.0f); // bit1=0 -> a
+  EXPECT_FLOAT_EQ(r5.z, 7.0f); // bit2=1 -> b
+  EXPECT_FLOAT_EQ(r5.w, 4.0f); // bit3=0 -> a
+
+  // mask=0b1010: select x,z from a; y,w from b
+  auto r10 = a.blend32<10>(b);
+  EXPECT_FLOAT_EQ(r10.x, 1.0f); // bit0=0 -> a
+  EXPECT_FLOAT_EQ(r10.y, 6.0f); // bit1=1 -> b
+  EXPECT_FLOAT_EQ(r10.z, 3.0f); // bit2=0 -> a
+  EXPECT_FLOAT_EQ(r10.w, 8.0f); // bit3=1 -> b
 }

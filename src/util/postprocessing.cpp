@@ -472,6 +472,7 @@ void PostProcessing::Chain::LoadStages(std::unique_lock<std::mutex>& settings_lo
   progress.SetProgressRange(stage_count);
 
   u32 enabled_stage_count = 0;
+  u32 first_enabled_stage = std::numeric_limits<u32>::max();
   u32 last_enabled_stage = std::numeric_limits<u32>::max();
   for (u32 i = 0; i < stage_count; i++)
   {
@@ -503,7 +504,10 @@ void PostProcessing::Chain::LoadStages(std::unique_lock<std::mutex>& settings_lo
     shader->SetFinalStage(false);
     enabled_stage_count += BoolToUInt32(stage_enabled);
     if (stage_enabled)
+    {
+      first_enabled_stage = std::min(first_enabled_stage, i);
       last_enabled_stage = i;
+    }
 
     m_stages.push_back(std::move(shader));
   }
@@ -532,13 +536,15 @@ void PostProcessing::Chain::LoadStages(std::unique_lock<std::mutex>& settings_lo
 
   // must be down here, because we need to compile first, triggered by CheckTargets()
   for (std::unique_ptr<Shader>& shader : m_stages)
-  {
-    m_wants_depth_buffer |= shader->WantsDepthBuffer();
-    m_wants_unscaled_input |= shader->WantsUnscaledInput();
-  }
+    m_wants_depth_buffer |= (shader->IsEnabled() && shader->WantsDepthBuffer());
   m_needs_depth_buffer = m_enabled && m_wants_depth_buffer;
   if (m_wants_depth_buffer)
     DEV_COLOR_LOG(StrongOrange, "Depth buffer is needed.");
+
+  m_wants_unscaled_input =
+    (first_enabled_stage < m_stages.size() && m_stages[first_enabled_stage]->WantsUnscaledInput());
+  if (m_wants_unscaled_input)
+    DEV_COLOR_LOG(StrongOrange, "Shader chain wants unscaled input.");
 
   // can't close/redraw with settings lock held because big picture
   settings_lock.unlock();
@@ -567,10 +573,12 @@ void PostProcessing::Chain::UpdateSettings(std::unique_lock<std::mutex>& setting
 
   const GPUTextureFormat prev_format = m_target_format;
   m_wants_depth_buffer = false;
+  m_wants_unscaled_input = false;
 
   const u32 prev_enabled_stage_count = static_cast<u32>(std::ranges::count_if(
     m_stages, [](const std::unique_ptr<Shader>& shader) { return (shader && shader->IsEnabled()); }));
   u32 enabled_stage_count = 0;
+  u32 first_enabled_stage = std::numeric_limits<u32>::max();
   u32 last_enabled_stage = 0;
   for (u32 i = 0; i < stage_count; i++)
   {
@@ -614,7 +622,10 @@ void PostProcessing::Chain::UpdateSettings(std::unique_lock<std::mutex>& setting
     m_stages[i]->SetFinalStage(false);
     enabled_stage_count += BoolToUInt32(stage_enabled);
     if (stage_enabled)
+    {
+      first_enabled_stage = std::min(first_enabled_stage, i);
       last_enabled_stage = i;
+    }
   }
 
   if (prev_format != GPUTextureFormat::Unknown)
@@ -646,10 +657,15 @@ void PostProcessing::Chain::UpdateSettings(std::unique_lock<std::mutex>& setting
 
   // must be down here, because we need to compile first, triggered by CheckTargets()
   for (std::unique_ptr<Shader>& shader : m_stages)
-    m_wants_depth_buffer |= shader->WantsDepthBuffer();
+    m_wants_depth_buffer |= (shader->IsEnabled() && shader->WantsDepthBuffer());
   m_needs_depth_buffer = m_enabled && m_wants_depth_buffer;
   if (m_wants_depth_buffer)
     DEV_LOG("Depth buffer is needed.");
+
+  m_wants_unscaled_input =
+    (first_enabled_stage < m_stages.size() && m_stages[first_enabled_stage]->WantsUnscaledInput());
+  if (m_wants_unscaled_input)
+    DEV_COLOR_LOG(StrongOrange, "Shader chain wants unscaled input.");
 
   // can't close/redraw with settings lock held because big picture
   settings_lock.unlock();
@@ -722,6 +738,9 @@ bool PostProcessing::Chain::CheckTargets(u32 source_width, u32 source_height, GP
   m_viewport_height = viewport_height;
 
   // shortcut if only the source size changed
+  u32 first_enabled_stage = std::numeric_limits<u32>::max();
+  m_wants_depth_buffer = false;
+  m_wants_unscaled_input = false;
   if (m_target_width != target_width || m_target_height != target_height || m_target_format != target_format)
   {
     if (!progress)
@@ -729,8 +748,6 @@ bool PostProcessing::Chain::CheckTargets(u32 source_width, u32 source_height, GP
 
     progress->SetProgressRange(static_cast<u32>(m_stages.size()));
     progress->SetProgressValue(0);
-
-    m_wants_depth_buffer = false;
 
     for (size_t i = 0; i < m_stages.size(); i++)
     {
@@ -753,11 +770,13 @@ bool PostProcessing::Chain::CheckTargets(u32 source_width, u32 source_height, GP
       }
 
       progress->SetProgressValue(static_cast<u32>(i + 1));
-      m_wants_depth_buffer |= shader->IsEnabled() && shader->WantsDepthBuffer();
 
       // Don't adjust target size until first enabled shader.
       if (!shader->IsEnabled())
         continue;
+
+      first_enabled_stage = std::min(first_enabled_stage, static_cast<u32>(i));
+      m_wants_depth_buffer |= shader->WantsDepthBuffer();
 
       // First shader outputs at target size, so the input is now target size.
       source_width = target_width;
@@ -770,8 +789,10 @@ bool PostProcessing::Chain::CheckTargets(u32 source_width, u32 source_height, GP
   {
     m_wants_depth_buffer = false;
 
-    for (std::unique_ptr<Shader>& shader : m_stages)
+    for (size_t i = 0; i < m_stages.size(); i++)
     {
+      const std::unique_ptr<Shader>& shader = m_stages[i];
+
       // Don't allocate targets until first enabled shader.
       if (!shader->IsEnabled())
         continue;
@@ -790,7 +811,8 @@ bool PostProcessing::Chain::CheckTargets(u32 source_width, u32 source_height, GP
         return false;
       }
 
-      m_wants_depth_buffer |= shader->IsEnabled() && shader->WantsDepthBuffer();
+      first_enabled_stage = std::min(first_enabled_stage, static_cast<u32>(i));
+      m_wants_depth_buffer |= shader->WantsDepthBuffer();
 
       // First shader outputs at target size, so the input is now target size.
       source_width = target_width;
@@ -799,6 +821,9 @@ bool PostProcessing::Chain::CheckTargets(u32 source_width, u32 source_height, GP
       viewport_height = target_height;
     }
   }
+
+  m_wants_unscaled_input =
+    (first_enabled_stage < m_stages.size() && m_stages[first_enabled_stage]->WantsUnscaledInput());
 
   m_target_width = target_width;
   m_target_height = target_height;
@@ -818,10 +843,9 @@ void PostProcessing::Chain::DestroyTextures()
   g_gpu_device->RecycleTexture(std::move(m_input_texture));
 }
 
-GPUDevice::PresentResult PostProcessing::Chain::Apply(GPUTexture* input_color, GPUTexture* input_depth,
-                                                      GPUTexture* final_target, const GSVector4i final_rect,
-                                                      s32 orig_width, s32 orig_height, s32 native_width,
-                                                      s32 native_height)
+GPUPresentResult PostProcessing::Chain::Apply(GPUTexture* input_color, GPUTexture* input_depth,
+                                              GPUTexture* final_target, const GSVector4i& final_rect, s32 orig_width,
+                                              s32 orig_height, s32 native_width, s32 native_height)
 {
   GL_SCOPE_FMT("{} Apply", m_section);
 
@@ -837,10 +861,10 @@ GPUDevice::PresentResult PostProcessing::Chain::Apply(GPUTexture* input_color, G
     if (!stage->IsEnabled())
       continue;
 
-    if (const GPUDevice::PresentResult pres = stage->Apply(
+    if (const GPUPresentResult pres = stage->Apply(
           original_color, input_color, input_depth, stage->IsFinalStage() ? final_target : output, final_rect,
           orig_width, orig_height, native_width, native_height, m_target_width, m_target_height, time);
-        pres != GPUDevice::PresentResult::OK)
+        pres != GPUPresentResult::OK)
     {
       return pres;
     }
@@ -855,7 +879,7 @@ GPUDevice::PresentResult PostProcessing::Chain::Apply(GPUTexture* input_color, G
     }
   }
 
-  return GPUDevice::PresentResult::OK;
+  return GPUPresentResult::OK;
 }
 
 std::unique_ptr<PostProcessing::Shader> PostProcessing::TryLoadingShader(const std::string& shader_name,

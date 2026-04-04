@@ -53,13 +53,16 @@ enum class SettingsPage : u8
 // Utility
 //////////////////////////////////////////////////////////////////////////
 
+MainWindowType GetCurrentMainWindow();
+bool SetPendingMainWindowSwitch();
+bool CanCurrentMainWindowStack();
 void SwitchToMainWindow(MainWindowType type);
 void ReturnToMainWindow();
 void ReturnToMainWindow(float transition_time);
 void ReturnToPreviousWindow();
 bool AreAnyDialogsOpen();
 
-void PauseForMenuOpen(bool set_pause_menu_open);
+void PauseForMenuOpen(bool was_paused, bool set_pause_menu_open);
 void ClosePauseMenu();
 void ClosePauseMenuImmediately();
 

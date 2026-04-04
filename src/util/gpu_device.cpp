@@ -37,6 +37,7 @@ LOG_CHANNEL(GPUDevice);
 #endif
 
 #ifdef ENABLE_OPENGL
+#include "opengl_context.h"
 #include "opengl_device.h"
 #endif
 
@@ -235,6 +236,9 @@ size_t GPUFramebufferManagerBase::KeyHash::operator()(const Key& key) const
 
 GPUSwapChain::GPUSwapChain(const WindowInfo& wi, GPUVSyncMode vsync_mode) : m_window_info(wi), m_vsync_mode(vsync_mode)
 {
+  // Needed for the GetSizeVec() function to work.
+  static_assert(OFFSETOF(GPUSwapChain, m_window_info.surface_height) ==
+                OFFSETOF(GPUSwapChain, m_window_info.surface_width) + sizeof(u16));
 }
 
 GPUSwapChain::~GPUSwapChain() = default;
@@ -394,7 +398,6 @@ std::optional<GPUDevice::AdapterInfoList> GPUDevice::GetAdapterListForAPI(Render
 #ifdef ENABLE_OPENGL
     case RenderAPI::OpenGL:
     case RenderAPI::OpenGLES:
-      // No way of querying.
       ret = AdapterInfoList();
       break;
 #endif
@@ -1365,13 +1368,6 @@ std::unique_ptr<GPUDevice> GPUDevice::CreateDeviceForAPI(RenderAPI api)
   }
 }
 
-#ifndef _WIN32
-// Use a duckstation-suffixed shaderc name to avoid conflicts and loading another shaderc, e.g. from the Vulkan SDK.
-#define SHADERC_LIB_NAME "shaderc_ds"
-#else
-#define SHADERC_LIB_NAME "shaderc_shared"
-#endif
-
 namespace dyn_libs {
 static void CloseShaderc();
 static void CloseSpirvCross();
@@ -1398,7 +1394,7 @@ bool dyn_libs::OpenShaderc(Error* error)
   if (s_shaderc_library.IsOpen())
     return true;
 
-  const std::string libname = DynamicLibrary::GetVersionedFilename(SHADERC_LIB_NAME);
+  const std::string libname = DynamicLibrary::GetVersionedFilename("shaderc_shared");
   if (!s_shaderc_library.Open(libname.c_str(), error))
   {
     Error::AddPrefix(error, "Failed to load shaderc: ");

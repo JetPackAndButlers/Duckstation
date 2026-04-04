@@ -5,6 +5,7 @@ add_library(util
   audio_stream.h
   cd_image.cpp
   cd_image.h
+  cd_image_ccd.cpp
   cd_image_cue.cpp
   cd_image_chd.cpp
   cd_image_device.cpp
@@ -84,8 +85,8 @@ add_library(util
 
 target_precompile_headers(util PRIVATE "pch.h")
 target_include_directories(util PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
-target_link_libraries(util PUBLIC common simpleini imgui)
-target_link_libraries(util PRIVATE libchdr lzma JPEG::JPEG PNG::PNG WebP::libwebp plutosvg::plutosvg ZLIB::ZLIB SoundTouch::SoundTouchDLL xxhash zstd::libzstd_shared reshadefx)
+target_link_libraries(util PUBLIC common imgui)
+target_link_libraries(util PRIVATE libchdr lzma libjpeg-turbo::jpeg PNG::PNG WebP::webp plutosvg::plutosvg ZLIB::ZLIB SoundTouch::SoundTouchDLL xxhash zstd::libzstd_shared reshadefx)
 
 if(ENABLE_X11)
   target_sources(util PRIVATE
@@ -93,11 +94,7 @@ if(ENABLE_X11)
     x11_tools.h
   )
   target_compile_definitions(util PRIVATE "-DENABLE_X11=1")
-  target_include_directories(util PRIVATE
-    "${X11_xcb_INCLUDE_PATH}"
-    "${X11_xcb_randr_INCLUDE_PATH}"
-    "${X11_X11_xcb_INCLUDE_PATH}"
-  )
+  target_include_directories(util PRIVATE "${X11_xcb_INCLUDE_PATH}")
 endif()
 
 if(ENABLE_WAYLAND)
@@ -201,12 +198,6 @@ if(NOT ANDROID)
     sdl_input_source.cpp
     sdl_input_source.h
   )
-  if(ENABLE_OPENGL)
-    target_sources(util PRIVATE
-      opengl_context_sdl.cpp
-      opengl_context_sdl.h
-    )
-  endif()
   target_compile_definitions(util PUBLIC
     ENABLE_SDL
   )
@@ -307,12 +298,24 @@ function(add_util_resources target)
       message(WARNING "MoltenVK not found in path, it will depend on the target system having it.")
     endif()
 
-    # Copy dynamically-loaded libraries (harfbuzz/shaderc/spirv-cross) into the bundle
-    get_target_property(HARFBUZZ_LIBRARY harfbuzz::harfbuzz IMPORTED_LOCATION_RELEASE)
-    get_target_property(SPIRV_CROSS_LIBRARY spirv-cross-c-shared IMPORTED_SONAME_RELEASE)
-    get_target_property(SHADERC_LIBRARY Shaderc::shaderc_shared IMPORTED_LOCATION_RELEASE)
-    target_sources(${target} PRIVATE "${HARFBUZZ_LIBRARY}" "${SHADERC_LIBRARY}" "${SPIRV_CROSS_LIBRARY}")
-    set_source_files_properties("${HARFBUZZ_LIBRARY}" "${SHADERC_LIBRARY}" "${SPIRV_CROSS_LIBRARY}" PROPERTIES MACOSX_PACKAGE_LOCATION Frameworks)
+    # Copy dynamically-loaded libraries (harfbuzz/shaderc/spirv-cross) into the bundle.
+    # Use IMPORTED_SONAME_RELEASE to get the major-versioned filename (stripping the @rpath/ prefix).
+    foreach(dyn_lib harfbuzz::harfbuzz spirv-cross-c-shared Shaderc::shaderc_shared)
+      get_target_property(dyn_lib_path ${dyn_lib} IMPORTED_LOCATION_RELEASE)
+      get_target_property(dyn_lib_soname ${dyn_lib} IMPORTED_SONAME_RELEASE)
+      if(dyn_lib_soname)
+        string(REPLACE "@rpath/" "" dyn_lib_soname_filename "${dyn_lib_soname}")
+        get_filename_component(dyn_lib_dir "${dyn_lib_path}" DIRECTORY)
+        set(dyn_lib_major_path "${dyn_lib_dir}/${dyn_lib_soname_filename}")
+        if(EXISTS "${dyn_lib_major_path}")
+          set(dyn_lib_path "${dyn_lib_major_path}")
+        else()
+          message(WARNING "Could not find major-versioned symlink for ${dyn_lib}.")
+        endif()
+      endif()
+      target_sources(${target} PRIVATE "${dyn_lib_path}")
+      set_source_files_properties("${dyn_lib_path}" PROPERTIES MACOSX_PACKAGE_LOCATION Frameworks)
+    endforeach()
 
     # Copy FFmpeg libraries into the bundle
     foreach(component avcodec avformat avutil swresample swscale)
@@ -321,5 +324,13 @@ function(add_util_resources target)
       target_sources(${target} PRIVATE ${version_lib})
       set_source_files_properties(${target} PRIVATE ${version_lib} PROPERTIES MACOSX_PACKAGE_LOCATION Frameworks)
     endforeach()
+  elseif(NOT WIN32)
+    # We need to add the rpath for shaderc to the executable.
+    get_target_property(SHADERC_LIBRARY Shaderc::shaderc_shared IMPORTED_LOCATION)
+    get_filename_component(SHADERC_LIBRARY_DIRECTORY ${SHADERC_LIBRARY} DIRECTORY)
+    set_target_properties(${target} PROPERTIES BUILD_RPATH "${SHADERC_LIBRARY_DIRECTORY}")
+    get_target_property(SPIRV_CROSS_LIBRARY spirv-cross-c-shared IMPORTED_LOCATION)
+    get_filename_component(SPIRV_CROSS_LIBRARY_DIRECTORY ${SPIRV_CROSS_LIBRARY} DIRECTORY)
+    set_target_properties(${target} PROPERTIES BUILD_RPATH "${SPIRV_CROSS_LIBRARY_DIRECTORY}")
   endif()
 endfunction()

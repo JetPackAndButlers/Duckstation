@@ -418,7 +418,8 @@ bool VulkanDevice::EnableOptionalDeviceExtensions(VkPhysicalDevice physical_devi
 
 #ifdef _WIN32
   m_optional_extensions.vk_ext_full_screen_exclusive =
-    enable_surface && SupportsAndAddExtension(VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME);
+    (enable_surface && VulkanLoader::GetOptionalExtensions().vk_khr_get_surface_capabilities2 &&
+     SupportsAndAddExtension(VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME));
   LOG_EXT("VK_EXT_full_screen_exclusive", vk_ext_full_screen_exclusive);
 #endif
 
@@ -1882,13 +1883,13 @@ void VulkanDevice::WaitForGPUIdle()
   SubmitCommandBuffer(true);
 }
 
-GPUDevice::PresentResult VulkanDevice::BeginPresent(GPUSwapChain* swap_chain, u32 clear_color)
+GPUPresentResult VulkanDevice::BeginPresent(GPUSwapChain* swap_chain, u32 clear_color)
 {
   if (InRenderPass())
     EndRenderPass();
 
   if (m_device_was_lost) [[unlikely]]
-    return PresentResult::DeviceLost;
+    return GPUPresentResult::DeviceLost;
 
   VulkanSwapChain* const SC = static_cast<VulkanSwapChain*>(swap_chain);
   VkResult res = SC->AcquireNextImage(true);
@@ -1900,11 +1901,11 @@ GPUDevice::PresentResult VulkanDevice::BeginPresent(GPUSwapChain* swap_chain, u3
     // Still submit the command buffer, otherwise we'll end up with several frames waiting.
     SubmitCommandBuffer(false);
     TrimTexturePool();
-    return PresentResult::SkipPresent;
+    return GPUPresentResult::SkipPresent;
   }
 
   BeginSwapChainRenderPass(SC, clear_color);
-  return PresentResult::OK;
+  return GPUPresentResult::OK;
 }
 
 void VulkanDevice::EndPresent(GPUSwapChain* swap_chain, bool explicit_present, u64 present_time)

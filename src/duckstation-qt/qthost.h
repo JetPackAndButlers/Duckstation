@@ -119,7 +119,7 @@ Q_SIGNALS:
   void onResizeRenderWindowRequested(qint32 width, qint32 height);
   void onReleaseRenderWindowRequested();
   void inputProfileLoaded();
-  void mouseModeRequested(bool relative, bool hide_cursor);
+  void mouseModeRequested(bool relative, bool hide_cursor, bool ignore_double_click);
   void fullscreenUIStartedOrStopped(bool running);
   void achievementsLoginRequested(Achievements::LoginRequestReason reason);
   void achievementsLoginSuccess(const QString& username, quint32 points, quint32 sc_points, quint32 unread_messages);
@@ -242,8 +242,16 @@ public:
     QString display_name;
   };
 
+  struct Effect
+  {
+    InputBindingInfo::Type type;
+    InputBindingKey key;
+    std::string name;
+    std::string display_name;
+  };
+
   using DeviceList = QList<Device>;
-  using EffectList = QList<QPair<InputBindingInfo::Type, InputBindingKey>>;
+  using EffectList = QList<Effect>;
 
   explicit InputDeviceListModel(QObject* parent = nullptr);
   ~InputDeviceListModel() override;
@@ -319,6 +327,12 @@ bool HasGlobalStylesheet();
 /// Sets the icon theme, based on the current style (light/dark).
 void UpdateThemeOnStyleChange();
 
+/// Returns true if the specified theme name uses style sheets.
+bool IsStylesheetTheme(std::string_view theme_name);
+
+/// Returns a list of custom themes available on the system.
+QStringList GetCustomThemeList();
+
 /// Sets batch mode (exit after game shutdown).
 bool InBatchMode();
 
@@ -349,6 +363,9 @@ QString GetResourcesBasePath();
 /// Returns the path to the specified resource.
 std::string GetResourcePath(std::string_view name, bool allow_override);
 QString GetResourceQPath(std::string_view name, bool allow_override);
+
+/// Reads an embedded resource file to a string.
+std::optional<std::string> ReadResourceFileToString(std::string_view name, bool allow_override, Error* error);
 
 /// Returns the font family for the bundled Roboto font.
 const QStringList& GetRobotoFontFamilies();
